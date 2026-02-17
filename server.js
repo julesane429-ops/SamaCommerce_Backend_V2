@@ -13,7 +13,7 @@ const alertsRoutes = require("./routes/alerts");
 
 // Middleware CORS
 const allowedOrigins = [
-  'https://samacommerce-frontend-v2-1.onrender.com
+  'https://samacommerce-frontend-v2-1.onrender.com'
   'http://localhost:3000',
   'http://localhost:4000',
   'http://127.0.0.1:3000',
