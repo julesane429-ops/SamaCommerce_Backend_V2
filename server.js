@@ -8,9 +8,6 @@ const path = require('path');
 const app = express();
 const port = process.env.PORT || 4000;
 
-app.use(express.json());
-
-const path = require('path');
 
 // Servir les fichiers statiques depuis la racine
 app.use(express.static(__dirname));
