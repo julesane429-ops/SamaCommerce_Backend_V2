@@ -3,9 +3,15 @@ const cors = require('cors');
 require('dotenv').config();
 const cron = require('node-cron'); // ✅ Ajout cron
 const pool = require('./db'); // ✅ Connexion DB
+const path = require('path');
 
 const app = express();
 const port = process.env.PORT || 4000;
+
+app.use(express.json());
+
+// ✅ Servir les fichiers statiques
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Routes importées
 const adminWithdrawalsRoutes = require("./routes/adminWithdrawals");
@@ -50,11 +56,6 @@ app.use("/admin-withdrawals", adminWithdrawalsRoutes);
 app.use("/admin-transfers", require("./routes/adminTransfers"));
 app.use("/admin-settings", require("./routes/adminSettings"));
 app.use("/alerts", alertsRoutes);
-
-// Test route
-app.get('/', (req, res) => {
-  res.send('✅ API en ligne et opérationnelle !');
-});
 
 // ✅ Cron job : recalcul automatique des alertes chaque jour à minuit
 cron.schedule("0 0 * * *", async () => {
