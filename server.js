@@ -10,8 +10,10 @@ const port = process.env.PORT || 4000;
 
 app.use(express.json());
 
-// ✅ Servir les fichiers statiques
-app.use(express.static(path.join(__dirname, 'public')));
+const path = require('path');
+
+// Servir les fichiers statiques depuis la racine
+app.use(express.static(__dirname));
 
 // Routes importées
 const adminWithdrawalsRoutes = require("./routes/adminWithdrawals");
