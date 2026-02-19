@@ -25,7 +25,7 @@ const allowedOrigins = [
   'http://localhost:5000',
   'http://localhost:5500'
 ];
-
+console.log("ENV TEST:", process.env.DATABASE_URL);
 app.use(cors({
   origin: function (origin, callback) {
     if (!origin || origin === 'null') return callback(null, true); // Autoriser Postman / file://
