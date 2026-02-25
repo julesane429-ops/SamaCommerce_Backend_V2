@@ -6,10 +6,9 @@ const pool = require("../db");
 const sendEmail = require("../utils/mailer");
 
 /* ======================================================
-   🔐 HELPERS
+   🔐 MIDDLEWARE AUTH
 ====================================================== */
 
-// Middleware authentification
 function authenticateToken(req, res, next) {
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1];
@@ -19,12 +18,7 @@ function authenticateToken(req, res, next) {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    req.user = {
-      id: decoded.id,
-      shop_id: decoded.shop_id || decoded.id, // compat V1
-      role: decoded.role,
-      username: decoded.username
-    };
+    req.user = decoded; // on garde tout le payload (type inclus)
 
     next();
   } catch (err) {
@@ -32,33 +26,38 @@ function authenticateToken(req, res, next) {
   }
 }
 
-// Middleware admin
+/* ======================================================
+   🔒 MIDDLEWARE ROLES
+====================================================== */
+
+function isSuperAdmin(req, res, next) {
+  if (req.user.role !== "super_admin") {
+    return res.status(403).json({ error: "Accès réservé au Super Admin" });
+  }
+  next();
+}
+
+function isOwner(req, res, next) {
+  if (req.user.type !== "owner") {
+    return res.status(403).json({ error: "Accès réservé au propriétaire" });
+  }
+  next();
+}
+
 function isAdmin(req, res, next) {
-  if (req.user.role !== "admin") {
+  // Compat ancienne logique admin = super_admin
+  if (req.user.role !== "super_admin") {
     return res.status(403).json({ error: "Accès réservé aux administrateurs" });
   }
   next();
 }
 
 /* ======================================================
-   📝 INSCRIPTION
+   📝 INSCRIPTION (OWNER)
 ====================================================== */
 
 router.post("/register", async (req, res) => {
-  const {
-    username,
-    password,
-    company_name,
-    phone,
-    role = "user",
-    status = "Actif",
-    plan = "Free",
-    payment_status = "À jour",
-    payment_method,
-    expiration,
-    amount = 0.0,
-    upgrade_status = "validé"
-  } = req.body;
+  const { username, password, company_name, phone } = req.body;
 
   if (!username || !password) {
     return res.status(400).json({ error: "Champs manquants" });
@@ -76,44 +75,29 @@ router.post("/register", async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // 1️⃣ Création utilisateur
+    // Création OWNER
     const userResult = await pool.query(
       `INSERT INTO users 
-        (username, password, company_name, phone, role, status, plan, 
-         payment_status, payment_method, expiration, amount, upgrade_status) 
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) 
+        (username, password, company_name, phone, role)
+       VALUES ($1,$2,$3,$4,'owner')
        RETURNING *`,
-      [
-        username,
-        hashedPassword,
-        company_name || null,
-        phone || null,
-        role,
-        status,
-        plan,
-        payment_status,
-        payment_method || null,
-        expiration || null,
-        amount,
-        upgrade_status
-      ]
+      [username, hashedPassword, company_name || null, phone || null]
     );
 
     const user = userResult.rows[0];
 
-    // 2️⃣ Création boutique automatique
+    // Création shop
     const shopResult = await pool.query(
       `INSERT INTO shops (name, owner_id)
-       VALUES ($1, $2)
+       VALUES ($1,$2)
        RETURNING id`,
       [company_name || username, user.id]
     );
 
     const shopId = shopResult.rows[0].id;
 
-    // 3️⃣ Lier user → shop
     await pool.query(
-      `UPDATE users SET shop_id = $1 WHERE id = $2`,
+      `UPDATE users SET shop_id=$1 WHERE id=$2`,
       [shopId, user.id]
     );
 
@@ -122,18 +106,19 @@ router.post("/register", async (req, res) => {
       user: {
         id: user.id,
         username: user.username,
+        role: "owner",
         shop_id: shopId
       }
     });
 
   } catch (err) {
-    console.error("❌ Erreur inscription :", err);
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
 
 /* ======================================================
-   🔑 LOGIN + 2FA
+   🔑 LOGIN AUTO USERS + EMPLOYEES
 ====================================================== */
 
 router.post("/login", async (req, res) => {
@@ -144,104 +129,198 @@ router.post("/login", async (req, res) => {
   }
 
   try {
-    const result = await pool.query(
-      `SELECT id, username, password, role, company_name, phone, 
-              status, plan, upgrade_status, shop_id 
-       FROM users WHERE username = $1`,
+
+    /* =========================
+       1️⃣ RECHERCHE DANS USERS
+    ========================== */
+    const userResult = await pool.query(
+      `SELECT id, username, password, role, company_name,
+              phone, status, plan, shop_id
+       FROM users WHERE username=$1`,
       [username]
     );
 
-    if (result.rows.length === 0) {
-      return res.status(400).json({ error: "Utilisateur introuvable" });
-    }
+    if (userResult.rows.length > 0) {
+      const user = userResult.rows[0];
 
-    const user = result.rows[0];
+      if (user.status === "Bloqué") {
+        return res.status(403).json({ error: "Compte bloqué" });
+      }
 
-    if (user.status === "Bloqué") {
-      return res.status(403).json({
-        error: "Votre compte est bloqué."
+      const validPassword = await bcrypt.compare(password, user.password);
+      if (!validPassword) {
+        return res.status(401).json({ error: "Mot de passe incorrect" });
+      }
+
+      // 2FA uniquement pour super_admin
+      if (user.role === "super_admin") {
+        const settings = await pool.query(
+          "SELECT twofa_enabled FROM admin_settings WHERE admin_id=$1 LIMIT 1",
+          [user.id]
+        );
+
+        const twofaEnabled = settings.rows[0]?.twofa_enabled || false;
+
+        if (twofaEnabled) {
+          const code = Math.floor(100000 + Math.random() * 900000).toString();
+          const expires = new Date(Date.now() + 5 * 60 * 1000);
+
+          await pool.query(
+            `INSERT INTO twofa_codes (user_id, code, expires_at)
+             VALUES ($1,$2,$3)`,
+            [user.id, code, expires]
+          );
+
+          await sendEmail(
+            user.username,
+            "Code 2FA",
+            `Votre code est : ${code}`
+          );
+
+          return res.json({ twofa_required: true, userId: user.id });
+        }
+      }
+
+      // Déterminer type
+      let type = "owner";
+      if (user.role === "super_admin") type = "super_admin";
+
+      const token = jwt.sign(
+        {
+          id: user.id,
+          username: user.username,
+          role: user.role,
+          shop_id: user.shop_id,
+          type
+        },
+        process.env.JWT_SECRET,
+        { expiresIn: "1h" }
+      );
+
+      return res.json({
+        token,
+        user: {
+          id: user.id,
+          username: user.username,
+          role: user.role,
+          type,
+          shop_id: user.shop_id
+        }
       });
     }
 
-    const validPassword = await bcrypt.compare(password, user.password);
+    /* =========================
+       2️⃣ RECHERCHE DANS EMPLOYEES
+    ========================== */
+    const empResult = await pool.query(
+      `SELECT id, name, email, password, role, shop_id, is_active
+       FROM employees WHERE email=$1`,
+      [username]
+    );
+
+    if (empResult.rows.length === 0) {
+      return res.status(400).json({ error: "Utilisateur introuvable" });
+    }
+
+    const employee = empResult.rows[0];
+
+    if (!employee.is_active) {
+      return res.status(403).json({ error: "Employé désactivé" });
+    }
+
+    const validPassword = await bcrypt.compare(password, employee.password);
     if (!validPassword) {
       return res.status(401).json({ error: "Mot de passe incorrect" });
     }
 
-    /* ---------- Vérification 2FA ---------- */
-    const settings = await pool.query(
-      "SELECT twofa_enabled FROM admin_settings WHERE admin_id = $1 LIMIT 1",
-      [user.id]
-    );
-
-    const twofaEnabled = settings.rows[0]?.twofa_enabled || false;
-
-    if (twofaEnabled && user.role === "admin") {
-      const code = Math.floor(100000 + Math.random() * 900000).toString();
-      const expires = new Date(Date.now() + 5 * 60 * 1000);
-
-      await pool.query(
-        `INSERT INTO twofa_codes (user_id, code, expires_at) 
-         VALUES ($1, $2, $3)`,
-        [user.id, code, expires]
-      );
-
-      await sendEmail(
-        user.username,
-        "Votre code de connexion (2FA)",
-        `Voici votre code : ${code} (valable 5 minutes)`
-      );
-
-      return res.json({
-        twofa_required: true,
-        userId: user.id
-      });
-    }
-
-    /* ---------- JWT AVEC SHOP_ID ---------- */
     const token = jwt.sign(
       {
-        id: user.id,
-        username: user.username,
-        role: user.role,
-        shop_id: user.shop_id || user.id
+        id: employee.id,
+        role: employee.role,
+        shop_id: employee.shop_id,
+        type: "employee"
       },
       process.env.JWT_SECRET,
       { expiresIn: "1h" }
     );
 
-    res.json({
+    return res.json({
       token,
       user: {
-        id: user.id,
-        username: user.username,
-        role: user.role,
-        company_name: user.company_name,
-        phone: user.phone,
-        plan: user.plan,
-        upgrade_status: user.upgrade_status,
-        shop_id: user.shop_id
+        id: employee.id,
+        role: employee.role,
+        type: "employee",
+        shop_id: employee.shop_id
       }
     });
 
   } catch (err) {
-    console.error("❌ Erreur login :", err);
+    console.error("❌ Erreur login:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
 /* ======================================================
-   👤 INFOS UTILISATEUR CONNECTÉ
+   👤 /ME (AUTO USERS + EMPLOYEES)
 ====================================================== */
 
 router.get("/me", authenticateToken, async (req, res) => {
+
+  if (req.user.type === "employee") {
+    const emp = await pool.query(
+      "SELECT id, name, email, role, shop_id FROM employees WHERE id=$1",
+      [req.user.id]
+    );
+    return res.json(emp.rows[0]);
+  }
+
+  const user = await pool.query(
+    `SELECT id, username, role, shop_id, plan
+     FROM users WHERE id=$1`,
+    [req.user.id]
+  );
+
+  res.json(user.rows[0]);
+});
+
+/* ======================================================
+   👑 ADMIN (SUPER ADMIN ONLY)
+====================================================== */
+
+router.get("/users", authenticateToken, isSuperAdmin, async (req, res) => {
+  const result = await pool.query(
+    "SELECT id, username, role, plan, status FROM users ORDER BY id DESC"
+  );
+  res.json(result.rows);
+});
+/* ======================================================
+   👑 SUPER ADMIN - GESTION UTILISATEURS
+====================================================== */
+
+// Bloquer un utilisateur (owner uniquement)
+router.put("/users/:id/block", authenticateToken, isSuperAdmin, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT id, username, company_name, phone, role, status, 
-              plan, payment_status, payment_method, expiration, 
-              amount, upgrade_status, shop_id
-       FROM users WHERE id = $1`,
-      [req.user.id]
+      "UPDATE users SET status = 'Bloqué' WHERE id = $1 AND role != 'super_admin' RETURNING *",
+      [req.params.id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Utilisateur introuvable ou protégé" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Réactiver
+router.put("/users/:id/activate", authenticateToken, isSuperAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(
+      "UPDATE users SET status = 'Actif' WHERE id = $1 RETURNING *",
+      [req.params.id]
     );
 
     if (result.rows.length === 0) {
@@ -249,74 +328,43 @@ router.get("/me", authenticateToken, async (req, res) => {
     }
 
     res.json(result.rows[0]);
-
   } catch (err) {
-    console.error("❌ Erreur /me :", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-/* ======================================================
-   👑 ADMIN - GESTION UTILISATEURS
-====================================================== */
-
-// Liste users (admin seulement)
-router.get("/users", authenticateToken, isAdmin, async (req, res) => {
+// Supprimer (impossible de supprimer super_admin)
+router.delete("/users/:id", authenticateToken, isSuperAdmin, async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT id, username, company_name, phone, role, 
-             status, plan, payment_status, 
-             expiration, upgrade_status, shop_id
-      FROM users
-      ORDER BY id DESC
-    `);
-    res.json(result.rows);
+    const result = await pool.query(
+      "DELETE FROM users WHERE id = $1 AND role != 'super_admin' RETURNING *",
+      [req.params.id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Utilisateur introuvable ou protégé" });
+    }
+
+    res.json({ message: "Utilisateur supprimé", user: result.rows[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Bloquer
-router.put("/users/:id/block", authenticateToken, isAdmin, async (req, res) => {
-  const result = await pool.query(
-    "UPDATE users SET status = 'Bloqué' WHERE id = $1 RETURNING *",
-    [req.params.id]
-  );
-  res.json(result.rows[0]);
-});
-
-// Activer
-router.put("/users/:id/activate", authenticateToken, isAdmin, async (req, res) => {
-  const result = await pool.query(
-    "UPDATE users SET status = 'Actif' WHERE id = $1 RETURNING *",
-    [req.params.id]
-  );
-  res.json(result.rows[0]);
-});
-
-// Supprimer
-router.delete("/users/:id", authenticateToken, isAdmin, async (req, res) => {
-  await pool.query("DELETE FROM users WHERE id = $1", [req.params.id]);
-  res.json({ message: "Utilisateur supprimé" });
-});
-
 /* ======================================================
-   👑 ADMIN - APPROUVER / REJETER UPGRADE
+   👑 SUPER ADMIN - APPROUVER / REJETER UPGRADE
 ====================================================== */
 
-// ✅ Approuver upgrade utilisateur
-router.put('/upgrade/:userId/approve', authenticateToken, isAdmin, async (req, res) => {
-  const { userId } = req.params;
-
+router.put("/upgrade/:userId/approve", authenticateToken, isSuperAdmin, async (req, res) => {
   try {
     const result = await pool.query(
       `UPDATE users
-       SET plan = 'Premium',
-           upgrade_status = 'validé',
-           payment_status = 'À jour'
-       WHERE id = $1
-       RETURNING id, username, plan, upgrade_status, payment_status`,
-      [userId]
+       SET plan='Premium',
+           upgrade_status='validé',
+           payment_status='À jour'
+       WHERE id=$1
+       RETURNING id, username, plan, upgrade_status`,
+      [req.params.userId]
     );
 
     if (result.rows.length === 0) {
@@ -329,24 +377,20 @@ router.put('/upgrade/:userId/approve', authenticateToken, isAdmin, async (req, r
     });
 
   } catch (err) {
-    console.error("❌ Erreur approveUpgrade:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
 
-// ❌ Rejeter upgrade utilisateur
-router.put('/upgrade/:userId/reject', authenticateToken, isAdmin, async (req, res) => {
-  const { userId } = req.params;
-
+router.put("/upgrade/:userId/reject", authenticateToken, isSuperAdmin, async (req, res) => {
   try {
     const result = await pool.query(
       `UPDATE users
-       SET upgrade_status = 'rejeté',
-           plan = 'Free'
-       WHERE id = $1
+       SET plan='Free',
+           upgrade_status='rejeté'
+       WHERE id=$1
        RETURNING id, username, plan, upgrade_status`,
-      [userId]
+      [req.params.userId]
     );
 
     if (result.rows.length === 0) {
@@ -354,37 +398,48 @@ router.put('/upgrade/:userId/reject', authenticateToken, isAdmin, async (req, re
     }
 
     res.json({
-      message: "Upgrade rejeté avec succès",
+      message: "Upgrade rejeté",
       user: result.rows[0]
     });
 
   } catch (err) {
-    console.error("❌ Erreur rejectUpgrade:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
 /* ======================================================
-   🔄 UPGRADE
+   🔄 UPGRADE (OWNER)
 ====================================================== */
 
 router.put("/upgrade", authenticateToken, async (req, res) => {
+  if (req.user.type !== "owner") {
+    return res.status(403).json({ error: "Seul le propriétaire peut faire un upgrade" });
+  }
+
   const { phone, payment_method, amount, expiration } = req.body;
 
-  const result = await pool.query(
-    `UPDATE users
-     SET phone=$1, plan='Premium',
-         payment_method=$2, amount=$3,
-         expiration=$4, upgrade_status='en attente'
-     WHERE id=$5
-     RETURNING id, username, plan, upgrade_status`,
-    [phone, payment_method, amount, expiration, req.user.id]
-  );
+  try {
+    const result = await pool.query(
+      `UPDATE users
+       SET phone=$1,
+           plan='Premium',
+           payment_method=$2,
+           amount=$3,
+           expiration=$4,
+           upgrade_status='en attente'
+       WHERE id=$5
+       RETURNING id, username, plan, upgrade_status`,
+      [phone, payment_method, amount, expiration, req.user.id]
+    );
 
-  res.json({
-    message: "Demande d’upgrade enregistrée",
-    user: result.rows[0]
-  });
+    res.json({
+      message: "Demande d’upgrade enregistrée",
+      user: result.rows[0]
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 /* ======================================================
@@ -398,7 +453,7 @@ router.post("/verify-2fa", async (req, res) => {
     `SELECT * FROM twofa_codes 
      WHERE user_id=$1 AND code=$2 
        AND used=false AND expires_at>NOW()
-     ORDER BY created_at DESC LIMIT 1`,
+     LIMIT 1`,
     [userId, code]
   );
 
@@ -423,7 +478,8 @@ router.post("/verify-2fa", async (req, res) => {
       id: user.id,
       username: user.username,
       role: user.role,
-      shop_id: user.shop_id || user.id
+      shop_id: user.shop_id,
+      type: user.role === "super_admin" ? "super_admin" : "owner"
     },
     process.env.JWT_SECRET,
     { expiresIn: "1h" }
