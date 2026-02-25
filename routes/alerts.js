@@ -10,19 +10,22 @@ const verifyToken = require("../middleware/auth");
 router.get("/", verifyToken, async (req, res) => {
   try {
     const q = await pool.query(
-      `SELECT a.id, a.type, a.message, a.days, a.seen, a.ignored, a.archived, a.created_at,
-              u.username
+      `SELECT a.*, u.username
        FROM alerts a
        LEFT JOIN users u ON a.user_id = u.id
        WHERE a.archived = false
-       ORDER BY a.created_at DESC`
+       AND a.shop_id = $1
+       ORDER BY a.created_at DESC`,
+      [req.user.shop_id]
     );
+
     res.json(q.rows);
   } catch (err) {
     console.error("❌ Erreur GET /alerts:", err);
     res.status(500).json({ error: "Impossible de charger les alertes" });
   }
 });
+
 
 /**
  * ✅ PATCH /alerts/:id/seen
