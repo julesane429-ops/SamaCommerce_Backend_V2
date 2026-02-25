@@ -14,10 +14,10 @@ router.get('/ventes-par-categorie', verifyToken, async (req, res) => {
       FROM sales s
       JOIN products p ON s.product_id = p.id
       JOIN categories c ON p.category_id = c.id
-      WHERE s.user_id = $1
+      WHERE s.shop_id = $1
       GROUP BY c.name
       ORDER BY total_quantite DESC
-    `, [req.user.id]);
+    `, [req.user.shop_id]);
     res.json(rows);
   } catch (err) {
     console.error(err);
@@ -34,10 +34,10 @@ router.get('/ventes-par-jour', verifyToken, async (req, res) => {
              SUM(s.quantity * p.price) AS total_montant
       FROM sales s
       JOIN products p ON s.product_id = p.id
-      WHERE s.user_id = $1
+      WHERE s.shop_id = $1
       GROUP BY DATE(s.created_at)
       ORDER BY date ASC
-    `, [req.user.id]);
+    `, [req.user.shop_id]);
     res.json(rows);
   } catch (err) {
     console.error(err);
@@ -54,9 +54,9 @@ router.get('/paiements', verifyToken, async (req, res) => {
              SUM(s.quantity * p.price) AS total_montant
       FROM sales s
       JOIN products p ON s.product_id = p.id
-      WHERE s.user_id = $1
+      WHERE s.shop_id = $1
       GROUP BY s.payment_method
-    `, [req.user.id]);
+    `, [req.user.shop_id]);
     res.json(rows);
   } catch (err) {
     console.error(err);
@@ -73,11 +73,11 @@ router.get('/top-produits', verifyToken, async (req, res) => {
              SUM(s.quantity * p.price) AS total_montant
       FROM sales s
       JOIN products p ON s.product_id = p.id
-      WHERE s.user_id = $1
+      WHERE s.shop_id = $1
       GROUP BY p.name
       ORDER BY total_quantite DESC
       LIMIT 10
-    `, [req.user.id]);
+    `, [req.user.shop_id]);
     res.json(rows);
   } catch (err) {
     console.error(err);
@@ -94,9 +94,9 @@ router.get('/stock-faible', verifyToken, async (req, res) => {
              p.stock
       FROM products p
       WHERE p.stock <= $1
-        AND p.user_id = $2
+        AND p.shop_id = $2
       ORDER BY p.stock ASC
-    `, [seuil, req.user.id]);
+    `, [seuil, req.user.shop_id]);
     res.json(rows);
   } catch (err) {
     console.error(err);
