@@ -1,103 +1,128 @@
 const express = require("express");
 const router = express.Router();
-const pool = require("../db");
+const db = require("../db");
 const verifyToken = require("../middleware/auth");
 
-/**
- * ✅ GET /alerts
- * Charger les alertes du shop uniquement
- */
-router.get("/", verifyToken, async (req, res) => {
+
+// ======================================================
+// 📊 VENTES PAR CATÉGORIE
+// ======================================================
+router.get("/ventes-par-categorie", verifyToken, async (req, res) => {
   try {
-    const q = await pool.query(
-      `SELECT a.*, u.username
-       FROM alerts a
-       LEFT JOIN users u ON a.user_id = u.id
-       WHERE a.archived = false
-       AND a.shop_id = $1
-       ORDER BY a.created_at DESC`,
+    const { rows } = await db.query(
+      `SELECT c.name AS categorie,
+              SUM(s.quantity) AS total_quantite,
+              SUM(s.total) AS total_montant
+       FROM sales s
+       JOIN products p ON s.product_id = p.id
+       LEFT JOIN categories c ON p.category_id = c.id
+       WHERE s.shop_id = $1
+       GROUP BY c.name
+       ORDER BY total_quantite DESC`,
       [req.user.shop_id]
     );
 
-    res.json(q.rows);
+    res.json(rows);
   } catch (err) {
-    console.error("❌ Erreur GET /alerts:", err);
-    res.status(500).json({ error: "Impossible de charger les alertes" });
+    console.error("Erreur ventes-par-categorie:", err);
+    res.status(500).json({ error: "Erreur serveur" });
   }
 });
 
-/**
- * ✅ PATCH /alerts/:id/seen
- * Marquer comme vue (sécurisé shop)
- */
-router.patch("/:id/seen", verifyToken, async (req, res) => {
+
+// ======================================================
+// 📅 VENTES PAR JOUR
+// ======================================================
+router.get("/ventes-par-jour", verifyToken, async (req, res) => {
   try {
-    const q = await pool.query(
-      `UPDATE alerts 
-       SET seen = true 
-       WHERE id = $1 AND shop_id = $2
-       RETURNING *`,
-      [req.params.id, req.user.shop_id]
+    const { rows } = await db.query(
+      `SELECT DATE(s.created_at) AS date,
+              SUM(s.quantity) AS total_quantite,
+              SUM(s.total) AS total_montant
+       FROM sales s
+       WHERE s.shop_id = $1
+       GROUP BY DATE(s.created_at)
+       ORDER BY date ASC`,
+      [req.user.shop_id]
     );
 
-    if (q.rows.length === 0) {
-      return res.status(404).json({ error: "Alerte introuvable ou non autorisée" });
-    }
-
-    res.json({ message: "✅ Alerte marquée comme vue", alert: q.rows[0] });
+    res.json(rows);
   } catch (err) {
-    console.error("❌ Erreur PATCH /alerts/:id/seen:", err);
-    res.status(500).json({ error: "Impossible de mettre à jour l’alerte" });
+    console.error("Erreur ventes-par-jour:", err);
+    res.status(500).json({ error: "Erreur serveur" });
   }
 });
 
-/**
- * ✅ PATCH /alerts/:id/ignore
- * Ignorer (sécurisé shop)
- */
-router.patch("/:id/ignore", verifyToken, async (req, res) => {
+
+// ======================================================
+// 💳 RÉPARTITION DES PAIEMENTS
+// ======================================================
+router.get("/paiements", verifyToken, async (req, res) => {
   try {
-    const q = await pool.query(
-      `UPDATE alerts 
-       SET ignored = true 
-       WHERE id = $1 AND shop_id = $2
-       RETURNING *`,
-      [req.params.id, req.user.shop_id]
+    const { rows } = await db.query(
+      `SELECT payment_method,
+              COUNT(*) AS total_ventes,
+              SUM(total) AS total_montant
+       FROM sales
+       WHERE shop_id = $1
+       GROUP BY payment_method`,
+      [req.user.shop_id]
     );
 
-    if (q.rows.length === 0) {
-      return res.status(404).json({ error: "Alerte introuvable ou non autorisée" });
-    }
-
-    res.json({ message: "✅ Alerte ignorée", alert: q.rows[0] });
+    res.json(rows);
   } catch (err) {
-    console.error("❌ Erreur PATCH /alerts/:id/ignore:", err);
-    res.status(500).json({ error: "Impossible d’ignorer l’alerte" });
+    console.error("Erreur paiements:", err);
+    res.status(500).json({ error: "Erreur serveur" });
   }
 });
 
-/**
- * ✅ DELETE /alerts/:id
- * Archiver (sécurisé shop)
- */
-router.delete("/:id", verifyToken, async (req, res) => {
+
+// ======================================================
+// 🏆 TOP PRODUITS
+// ======================================================
+router.get("/top-produits", verifyToken, async (req, res) => {
   try {
-    const q = await pool.query(
-      `UPDATE alerts 
-       SET archived = true 
-       WHERE id = $1 AND shop_id = $2
-       RETURNING *`,
-      [req.params.id, req.user.shop_id]
+    const { rows } = await db.query(
+      `SELECT p.name AS produit,
+              SUM(s.quantity) AS total_quantite,
+              SUM(s.total) AS total_montant
+       FROM sales s
+       JOIN products p ON s.product_id = p.id
+       WHERE s.shop_id = $1
+       GROUP BY p.name
+       ORDER BY total_quantite DESC
+       LIMIT 10`,
+      [req.user.shop_id]
     );
 
-    if (q.rows.length === 0) {
-      return res.status(404).json({ error: "Alerte introuvable ou non autorisée" });
-    }
-
-    res.json({ message: "✅ Alerte fermée", alert: q.rows[0] });
+    res.json(rows);
   } catch (err) {
-    console.error("❌ Erreur DELETE /alerts/:id:", err);
-    res.status(500).json({ error: "Impossible de fermer l’alerte" });
+    console.error("Erreur top-produits:", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+
+// ======================================================
+// ⚠️ STOCK FAIBLE
+// ======================================================
+router.get("/stock-faible", verifyToken, async (req, res) => {
+  try {
+    const seuil = parseInt(req.query.seuil) || 5;
+
+    const { rows } = await db.query(
+      `SELECT name AS produit, stock
+       FROM products
+       WHERE stock <= $1
+       AND shop_id = $2
+       ORDER BY stock ASC`,
+      [seuil, req.user.shop_id]
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("Erreur stock-faible:", err);
+    res.status(500).json({ error: "Erreur serveur" });
   }
 });
 
