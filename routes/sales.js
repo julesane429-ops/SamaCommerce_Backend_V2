@@ -10,7 +10,7 @@ router.get('/', verifyToken, async (req, res) => {
       SELECT s.*, p.name AS product_name
       FROM sales s
       JOIN products p ON s.product_id = p.id
-      WHERE s.user_id = $1
+      WHERE s.shop_id = $1
       ORDER BY s.created_at DESC
     `, [req.user.id]);
 
@@ -27,7 +27,7 @@ router.post('/', verifyToken, async (req, res) => {
 
   try {
     const result = await db.query(
-      'SELECT price, stock FROM products WHERE id = $1 AND user_id = $2',
+      'SELECT price, stock FROM products WHERE id = $1 AND shop_id = $2',
       [product_id, req.user.id]
     );
     const product = result.rows[0];
@@ -41,16 +41,28 @@ router.post('/', verifyToken, async (req, res) => {
 
     await db.query(
   `INSERT INTO sales 
-    (product_id, quantity, total, payment_method, user_id, client_name, client_phone, due_date, paid) 
-   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+(product_id, quantity, total, payment_method, user_id, shop_id, client_name, client_phone, due_date, paid)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
    RETURNING *`,
-  [product_id, quantity, total, payment_method, req.user.id, client_name || null, client_phone || null, due_date || null, paid]
+  [
+  product_id,
+  quantity,
+  total,
+  payment_method,
+  req.user.id,
+  req.user.shop_id,
+  client_name || null,
+  client_phone || null,
+  due_date || null,
+  paid
+]
+
 );
 
 const newSale = result.rows[0];
 
 await db.query(
-  'UPDATE products SET stock = stock - $1 WHERE id = $2 AND user_id = $3',
+  'UPDATE products SET stock = stock - $1 WHERE id = $2 AND shop_id = $3',
   [quantity, product_id, req.user.id]
 );
 
@@ -70,7 +82,7 @@ router.patch('/:id', verifyToken, async (req, res) => {
 
   try {
     const venteResult = await db.query(
-      'SELECT * FROM sales WHERE id = $1 AND user_id = $2',
+      'SELECT * FROM sales WHERE id = $1 AND shop_id = $2',
       [id, req.user.id]
     );
     if (venteResult.rowCount === 0) {
@@ -82,7 +94,7 @@ router.patch('/:id', verifyToken, async (req, res) => {
     // ✅ Cas 1 : modification de la quantité
     if (quantity && quantity !== vente.quantity) {
       const productResult = await db.query(
-        'SELECT price, stock FROM products WHERE id = $1 AND user_id = $2',
+        'SELECT price, stock FROM products WHERE id = $1 AND shop_id = $2',
         [vente.product_id, req.user.id]
       );
       const product = productResult.rows[0];
@@ -97,12 +109,12 @@ router.patch('/:id', verifyToken, async (req, res) => {
              payment_method = COALESCE($3, payment_method), 
              paid = COALESCE($4, paid),
              repayment_method = COALESCE($5, repayment_method)
-         WHERE id = $6 AND user_id = $7`,
+         WHERE id = $6 AND shop_id = $7`,
         [quantity, product.price * quantity, payment_method, paid, repayment_method, id, req.user.id]
       );
 
       await db.query(
-        'UPDATE products SET stock = stock - $1 WHERE id = $2 AND user_id = $3',
+        'UPDATE products SET stock = stock - $1 WHERE id = $2 AND shop_id = $3',
         [diff, vente.product_id, req.user.id]
       );
     } else {
@@ -112,13 +124,13 @@ router.patch('/:id', verifyToken, async (req, res) => {
          SET payment_method = COALESCE($1, payment_method), 
              paid = COALESCE($2, paid),
              repayment_method = COALESCE($3, repayment_method)
-         WHERE id = $4 AND user_id = $5`,
+         WHERE id = $4 AND shop_id = $5`,
         [payment_method, paid, repayment_method, id, req.user.id]
       );
     }
 
     const updated = await db.query(
-      'SELECT * FROM sales WHERE id = $1 AND user_id = $2',
+      'SELECT * FROM sales WHERE id = $1 AND shop_id = $2',
       [id, req.user.id]
     );
 
@@ -136,7 +148,7 @@ router.patch('/:id', verifyToken, async (req, res) => {
 router.delete('/:id', verifyToken, async (req, res) => {
   try {
     const result = await db.query(
-      'DELETE FROM sales WHERE id = $1 AND user_id = $2 RETURNING *',
+      'DELETE FROM sales WHERE id = $1 AND shop_id = $2 RETURNING *',
       [req.params.id, req.user.id]
     );
     if (result.rowCount === 0) return res.status(404).json({ error: 'Vente introuvable' });
