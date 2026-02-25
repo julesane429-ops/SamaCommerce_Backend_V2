@@ -5,7 +5,7 @@ const verifyToken = require("../middleware/auth");
 
 /**
  * ✅ GET /alerts
- * Charger toutes les alertes actives (non archivées) + username lié
+ * Charger les alertes du shop uniquement
  */
 router.get("/", verifyToken, async (req, res) => {
   try {
@@ -26,19 +26,23 @@ router.get("/", verifyToken, async (req, res) => {
   }
 });
 
-
 /**
  * ✅ PATCH /alerts/:id/seen
- * Marquer une alerte comme vue
+ * Marquer comme vue (sécurisé shop)
  */
 router.patch("/:id/seen", verifyToken, async (req, res) => {
   try {
     const q = await pool.query(
-      `UPDATE alerts SET seen = true WHERE id = $1 RETURNING *`,
-      [req.params.id]
+      `UPDATE alerts 
+       SET seen = true 
+       WHERE id = $1 AND shop_id = $2
+       RETURNING *`,
+      [req.params.id, req.user.shop_id]
     );
-    if (q.rows.length === 0)
-      return res.status(404).json({ error: "Alerte introuvable" });
+
+    if (q.rows.length === 0) {
+      return res.status(404).json({ error: "Alerte introuvable ou non autorisée" });
+    }
 
     res.json({ message: "✅ Alerte marquée comme vue", alert: q.rows[0] });
   } catch (err) {
@@ -49,16 +53,21 @@ router.patch("/:id/seen", verifyToken, async (req, res) => {
 
 /**
  * ✅ PATCH /alerts/:id/ignore
- * Ignorer une alerte (mais garder en base)
+ * Ignorer (sécurisé shop)
  */
 router.patch("/:id/ignore", verifyToken, async (req, res) => {
   try {
     const q = await pool.query(
-      `UPDATE alerts SET ignored = true WHERE id = $1 RETURNING *`,
-      [req.params.id]
+      `UPDATE alerts 
+       SET ignored = true 
+       WHERE id = $1 AND shop_id = $2
+       RETURNING *`,
+      [req.params.id, req.user.shop_id]
     );
-    if (q.rows.length === 0)
-      return res.status(404).json({ error: "Alerte introuvable" });
+
+    if (q.rows.length === 0) {
+      return res.status(404).json({ error: "Alerte introuvable ou non autorisée" });
+    }
 
     res.json({ message: "✅ Alerte ignorée", alert: q.rows[0] });
   } catch (err) {
@@ -69,16 +78,21 @@ router.patch("/:id/ignore", verifyToken, async (req, res) => {
 
 /**
  * ✅ DELETE /alerts/:id
- * Fermer une alerte (archiver)
+ * Archiver (sécurisé shop)
  */
 router.delete("/:id", verifyToken, async (req, res) => {
   try {
     const q = await pool.query(
-      `UPDATE alerts SET archived = true WHERE id = $1 RETURNING *`,
-      [req.params.id]
+      `UPDATE alerts 
+       SET archived = true 
+       WHERE id = $1 AND shop_id = $2
+       RETURNING *`,
+      [req.params.id, req.user.shop_id]
     );
-    if (q.rows.length === 0)
-      return res.status(404).json({ error: "Alerte introuvable" });
+
+    if (q.rows.length === 0) {
+      return res.status(404).json({ error: "Alerte introuvable ou non autorisée" });
+    }
 
     res.json({ message: "✅ Alerte fermée", alert: q.rows[0] });
   } catch (err) {
