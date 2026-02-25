@@ -10,9 +10,9 @@ router.get('/', verifyToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const result = await db.query(
-      'SELECT * FROM products WHERE user_id = $1 ORDER BY id DESC',
-      [userId]
-    );
+  'SELECT * FROM products WHERE shop_id = $1 ORDER BY id DESC',
+  [req.user.shop_id]
+);
 
     console.log('📤 GET /products renvoie :', result.rows);
     res.json(result.rows);
@@ -29,9 +29,9 @@ router.get('/:id', verifyToken, async (req, res) => {
     const productId = req.params.id;
 
     const result = await db.query(
-      'SELECT * FROM products WHERE id = $1 AND user_id = $2',
-      [productId, userId]
-    );
+  'SELECT * FROM products WHERE id = $1 AND shop_id = $2',
+  [productId, req.user.shop_id]
+);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Produit introuvable ou non autorisé.' });
@@ -55,19 +55,20 @@ router.post('/', verifyToken, async (req, res) => {
     const userId = req.user.id;
 
     const result = await db.query(
-      `INSERT INTO products (name, category_id, scent, price, stock, price_achat, user_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       RETURNING *`,
-      [
-        name,
-        category_id,
-        scent,
-        Number.isFinite(+price) ? +price : 0,
-        Number.isFinite(+stock) ? +stock : 0,
-        Number.isFinite(+price_achat) ? +price_achat : 0,
-        userId
-      ]
-    );
+  `INSERT INTO products (name, category_id, scent, price, stock, price_achat, user_id, shop_id)
+   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+   RETURNING *`,
+  [
+    name,
+    category_id,
+    scent,
+    Number.isFinite(+price) ? +price : 0,
+    Number.isFinite(+stock) ? +stock : 0,
+    Number.isFinite(+price_achat) ? +price_achat : 0,
+    req.user.id,
+    req.user.shop_id
+  ]
+);
 
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -103,11 +104,11 @@ router.patch('/:id', verifyToken, async (req, res) => {
 
     // Ajout du filtre par user_id pour sécuriser la modification
     values.push(req.params.id);
-    values.push(req.user.id);
+values.push(req.user.shop_id);
 
     const result = await db.query(
       `UPDATE products SET ${set.join(', ')}
-       WHERE id = $${i++} AND user_id = $${i}
+ WHERE id = $${i++} AND shop_id = $${i}
        RETURNING *`,
       values
     );
@@ -127,7 +128,7 @@ router.patch('/:id', verifyToken, async (req, res) => {
 router.delete('/:id', verifyToken, async (req, res) => {
   try {
     const result = await db.query(
-      'DELETE FROM products WHERE id = $1 AND user_id = $2 RETURNING *',
+      'DELETE FROM products WHERE id = $1 AND shop_id = $2 RETURNING *',
       [req.params.id, req.user.id]
     );
 
