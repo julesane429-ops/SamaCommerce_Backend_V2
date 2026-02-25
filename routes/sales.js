@@ -3,7 +3,7 @@ const router = express.Router();
 const db = require('../db');
 const verifyToken = require('../middleware/auth');
 
-// ✅ GET toutes les ventes
+// ✅ GET ventes
 router.get('/', verifyToken, async (req, res) => {
   try {
     const result = await db.query(`
@@ -12,7 +12,7 @@ router.get('/', verifyToken, async (req, res) => {
       JOIN products p ON s.product_id = p.id
       WHERE s.shop_id = $1
       ORDER BY s.created_at DESC
-    `, [req.user.shop_id]);
+    `, [req.user.shop_id]); // ✅ correction
 
     res.json(result.rows);
   } catch (err) {
@@ -21,52 +21,50 @@ router.get('/', verifyToken, async (req, res) => {
   }
 });
 
-// ✅ POST nouvelle vente (gère aussi le crédit)
+// ✅ POST vente
 router.post('/', verifyToken, async (req, res) => {
   const { product_id, quantity, payment_method, client_name, client_phone, due_date } = req.body;
 
   try {
-    const result = await db.query(
+    const productResult = await db.query(
       'SELECT price, stock FROM products WHERE id = $1 AND shop_id = $2',
       [product_id, req.user.shop_id]
     );
-    const product = result.rows[0];
+
+    const product = productResult.rows[0];
+
     if (!product) return res.status(404).json({ error: 'Produit introuvable' });
     if (product.stock < quantity) return res.status(400).json({ error: 'Stock insuffisant' });
 
     const total = product.price * quantity;
+    const paid = payment_method === "credit" ? false : true;
 
-    // ✅ payé immédiatement sauf si crédit
-    const paid = (payment_method === "credit") ? false : true;
+    const saleResult = await db.query(
+      `INSERT INTO sales 
+       (product_id, quantity, total, payment_method, user_id, shop_id, client_name, client_phone, due_date, paid)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       RETURNING *`,
+      [
+        product_id,
+        quantity,
+        total,
+        payment_method,
+        req.user.id,
+        req.user.shop_id,
+        client_name || null,
+        client_phone || null,
+        due_date || null,
+        paid
+      ]
+    );
 
+    // ✅ update stock
     await db.query(
-  `INSERT INTO sales 
-(product_id, quantity, total, payment_method, user_id, shop_id, client_name, client_phone, due_date, paid)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-   RETURNING *`,
-  [
-  product_id,
-  quantity,
-  total,
-  payment_method,
-  req.user.id,
-  req.user.shop_id,
-  client_name || null,
-  client_phone || null,
-  due_date || null,
-  paid
-]
+      'UPDATE products SET stock = stock - $1 WHERE id = $2 AND shop_id = $3',
+      [quantity, product_id, req.user.shop_id]
+    );
 
-);
-
-const newSale = result.rows[0];
-
-await db.query(
-  'UPDATE products SET stock = stock - $1 WHERE id = $2 AND shop_id = $3',
-  [quantity, product_id,req.user.shop_id]
-);
-
-res.status(201).json(newSale);  // ✅ renvoie la vente complète
+    res.status(201).json(saleResult.rows[0]);
 
   } catch (err) {
     console.error("Erreur POST /sales :", err);
