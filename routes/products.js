@@ -129,7 +129,7 @@ router.delete('/:id', verifyToken, async (req, res) => {
   try {
     const result = await db.query(
       'DELETE FROM products WHERE id = $1 AND shop_id = $2 RETURNING *',
-      [req.params.id, req.user.id]
+      [req.params.id, req.user.shop_id] // ✅ correction ici
     );
 
     if (result.rows.length === 0) {
@@ -142,5 +142,6 @@ router.delete('/:id', verifyToken, async (req, res) => {
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
+
 
 module.exports = router;
