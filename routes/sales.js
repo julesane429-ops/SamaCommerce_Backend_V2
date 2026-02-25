@@ -12,7 +12,7 @@ router.get('/', verifyToken, async (req, res) => {
       JOIN products p ON s.product_id = p.id
       WHERE s.shop_id = $1
       ORDER BY s.created_at DESC
-    `, [req.user.id]);
+    `, [req.user.shop_id]);
 
     res.json(result.rows);
   } catch (err) {
@@ -28,7 +28,7 @@ router.post('/', verifyToken, async (req, res) => {
   try {
     const result = await db.query(
       'SELECT price, stock FROM products WHERE id = $1 AND shop_id = $2',
-      [product_id, req.user.id]
+      [product_id, req.user.shop_id]
     );
     const product = result.rows[0];
     if (!product) return res.status(404).json({ error: 'Produit introuvable' });
@@ -63,7 +63,7 @@ const newSale = result.rows[0];
 
 await db.query(
   'UPDATE products SET stock = stock - $1 WHERE id = $2 AND shop_id = $3',
-  [quantity, product_id, req.user.id]
+  [quantity, product_id,req.user.shop_id]
 );
 
 res.status(201).json(newSale);  // ✅ renvoie la vente complète
@@ -83,7 +83,7 @@ router.patch('/:id', verifyToken, async (req, res) => {
   try {
     const venteResult = await db.query(
       'SELECT * FROM sales WHERE id = $1 AND shop_id = $2',
-      [id, req.user.id]
+      [id, req.user.shop_id]
     );
     if (venteResult.rowCount === 0) {
       return res.status(404).json({ error: 'Vente introuvable ou non autorisée' });
@@ -95,7 +95,7 @@ router.patch('/:id', verifyToken, async (req, res) => {
     if (quantity && quantity !== vente.quantity) {
       const productResult = await db.query(
         'SELECT price, stock FROM products WHERE id = $1 AND shop_id = $2',
-        [vente.product_id, req.user.id]
+        [vente.product_id, req.user.shop_id]
       );
       const product = productResult.rows[0];
       if (!product) return res.status(404).json({ error: 'Produit introuvable' });
@@ -110,12 +110,12 @@ router.patch('/:id', verifyToken, async (req, res) => {
              paid = COALESCE($4, paid),
              repayment_method = COALESCE($5, repayment_method)
          WHERE id = $6 AND shop_id = $7`,
-        [quantity, product.price * quantity, payment_method, paid, repayment_method, id, req.user.id]
+        [quantity, product.price * quantity, payment_method, paid, repayment_method, id, req.user.shop_id]
       );
 
       await db.query(
         'UPDATE products SET stock = stock - $1 WHERE id = $2 AND shop_id = $3',
-        [diff, vente.product_id, req.user.id]
+        [diff, vente.product_id, req.user.shop_id]
       );
     } else {
       // ✅ Cas 2 : simple mise à jour paiement/remboursement
@@ -125,13 +125,13 @@ router.patch('/:id', verifyToken, async (req, res) => {
              paid = COALESCE($2, paid),
              repayment_method = COALESCE($3, repayment_method)
          WHERE id = $4 AND shop_id = $5`,
-        [payment_method, paid, repayment_method, id, req.user.id]
+        [payment_method, paid, repayment_method, id, req.user.shop_id]
       );
     }
 
     const updated = await db.query(
       'SELECT * FROM sales WHERE id = $1 AND shop_id = $2',
-      [id, req.user.id]
+      [id, req.user.shop_id]
     );
 
     res.json(updated.rows[0]);
@@ -149,7 +149,7 @@ router.delete('/:id', verifyToken, async (req, res) => {
   try {
     const result = await db.query(
       'DELETE FROM sales WHERE id = $1 AND shop_id = $2 RETURNING *',
-      [req.params.id, req.user.id]
+      [req.params.id, req.user.shop_id]
     );
     if (result.rowCount === 0) return res.status(404).json({ error: 'Vente introuvable' });
 
