@@ -5,9 +5,10 @@ const jwt = require("jsonwebtoken");
 const pool = require("../db");
 const sendEmail = require("../utils/mailer");
 
-// ==========================
-//   Inscription (Admin ou public)
-// ==========================
+
+// ======================================================
+// 📝 INSCRIPTION
+// ======================================================
 router.post("/register", async (req, res) => {
   const {
     username,
@@ -21,38 +22,32 @@ router.post("/register", async (req, res) => {
     payment_method,
     expiration,
     amount = 0.0,
-    upgrade_status = "validé" // ✅ par défaut validé (Free = pas besoin de validation)
+    upgrade_status = "validé"
   } = req.body;
 
   if (!username || !password) {
-    return res.status(400).json({
-      error: "Champs manquants",
-      details: "Le champ 'username' ou 'password' est vide."
-    });
+    return res.status(400).json({ error: "Champs manquants" });
   }
 
   try {
-    // Vérifie si l'utilisateur existe déjà
     const existingUser = await pool.query(
-      "SELECT * FROM users WHERE username = $1",
+      "SELECT id FROM users WHERE username = $1",
       [username]
     );
+
     if (existingUser.rows.length > 0) {
-      return res.status(400).json({
-        error: "Utilisateur déjà existant",
-        details: `Le nom d'utilisateur '${username}' est déjà pris.`
-      });
+      return res.status(400).json({ error: "Utilisateur déjà existant" });
     }
 
-    // Hash du mot de passe
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Insertion avec TOUS les champs
-    const result = await pool.query(
+    // 1️⃣ Créer utilisateur
+    const userResult = await pool.query(
       `INSERT INTO users 
-        (username, password, company_name, phone, role, status, plan, payment_status, payment_method, expiration, amount, upgrade_status) 
+        (username, password, company_name, phone, role, status, plan, 
+         payment_status, payment_method, expiration, amount, upgrade_status) 
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) 
-       RETURNING id, username, company_name, phone, role, status, plan, payment_status, payment_method, expiration, amount, upgrade_status`,
+       RETURNING *`,
       [
         username,
         hashedPassword,
@@ -69,16 +64,32 @@ router.post("/register", async (req, res) => {
       ]
     );
 
+    const user = userResult.rows[0];
+
+    // 2️⃣ Créer boutique automatiquement
+    const shopResult = await pool.query(
+      `INSERT INTO shops (name, owner_id)
+       VALUES ($1, $2)
+       RETURNING id`,
+      [company_name || username, user.id]
+    );
+
+    const shopId = shopResult.rows[0].id;
+
+    // 3️⃣ Lier user à shop
+    await pool.query(
+      `UPDATE users SET shop_id = $1 WHERE id = $2`,
+      [shopId, user.id]
+    );
+
     res.status(201).json({
       message: "Compte créé avec succès",
-      user: result.rows[0]
+      user: { ...user, shop_id: shopId }
     });
+
   } catch (err) {
-    console.error("❌ Erreur lors de l'inscription :", err);
-    res.status(500).json({
-      error: "Erreur serveur",
-      details: err.message || err
-    });
+    console.error("❌ Erreur inscription :", err);
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -88,6 +99,7 @@ router.post("/register", async (req, res) => {
 // ==========================
 //   Connexion avec 2FA
 // ==========================
+
 router.post("/login", async (req, res) => {
   const { username, password } = req.body;
 
@@ -97,7 +109,9 @@ router.post("/login", async (req, res) => {
 
   try {
     const result = await pool.query(
-      "SELECT id, username, password, role, company_name, phone, status, plan, upgrade_status FROM users WHERE username = $1",
+      `SELECT id, username, password, role, company_name, phone, status, 
+              plan, upgrade_status, shop_id 
+       FROM users WHERE username = $1`,
       [username]
     );
 
@@ -107,9 +121,10 @@ router.post("/login", async (req, res) => {
 
     const user = result.rows[0];
 
-    // 🚫 Vérifier si le compte est bloqué
     if (user.status === "Bloqué") {
-      return res.status(403).json({ error: "Votre compte est bloqué. Veuillez contacter l’administrateur." });
+      return res.status(403).json({
+        error: "Votre compte est bloqué. Veuillez contacter l’administrateur."
+      });
     }
 
     const validPassword = await bcrypt.compare(password, user.password);
@@ -117,7 +132,7 @@ router.post("/login", async (req, res) => {
       return res.status(401).json({ error: "Mot de passe incorrect" });
     }
 
-    // Vérifier si 2FA activée
+    // Vérifier 2FA
     const settings = await pool.query(
       "SELECT twofa_enabled FROM admin_settings WHERE admin_id = $1 LIMIT 1",
       [user.id]
@@ -126,31 +141,35 @@ router.post("/login", async (req, res) => {
     const twofaEnabled = settings.rows[0]?.twofa_enabled || false;
 
     if (twofaEnabled && user.role === "admin") {
-      // Générer un code 6 chiffres
       const code = Math.floor(100000 + Math.random() * 900000).toString();
-      const expires = new Date(Date.now() + 5 * 60 * 1000); // expire dans 5 min
+      const expires = new Date(Date.now() + 5 * 60 * 1000);
 
       await pool.query(
-        `INSERT INTO twofa_codes (user_id, code, expires_at) VALUES ($1, $2, $3)`,
+        `INSERT INTO twofa_codes (user_id, code, expires_at) 
+         VALUES ($1, $2, $3)`,
         [user.id, code, expires]
       );
 
       await sendEmail(
-  user.username, // email de l’utilisateur
-  "Votre code de connexion (2FA) - Ma Boutique",
-  `Bonjour,\n\nVoici votre code de connexion : ${code}\n\nIl est valable 5 minutes.\n\nÀ bientôt !`
-);
+        user.username,
+        "Votre code de connexion (2FA) - Sama Commerce",
+        `Bonjour,\n\nVoici votre code : ${code}\nValable 5 minutes.`
+      );
 
       return res.json({
         twofa_required: true,
-        userId: user.id,
-        message: "Code 2FA envoyé par email"
+        userId: user.id
       });
     }
 
-    // Sinon → connexion normale
+    // ✅ JWT AVEC SHOP_ID
     const token = jwt.sign(
-      { id: user.id, username: user.username, role: user.role },
+      {
+        id: user.id,
+        username: user.username,
+        role: user.role,
+        shop_id: user.shop_id
+      },
       process.env.JWT_SECRET,
       { expiresIn: "1h" }
     );
@@ -164,29 +183,40 @@ router.post("/login", async (req, res) => {
         company_name: user.company_name,
         phone: user.phone,
         plan: user.plan,
-        upgrade_status: user.upgrade_status
+        upgrade_status: user.upgrade_status,
+        shop_id: user.shop_id
       }
     });
   } catch (err) {
-    console.error("❌ Erreur lors de la connexion :", err);
+    console.error("❌ Erreur login :", err);
     res.status(500).json({ error: err.message });
   }
 });
 
 
-// ==========================
-//   Middleware Auth
-// ==========================
+// ======================================================
+// 🔐 MIDDLEWARE AUTH
+// ======================================================
 function authenticateToken(req, res, next) {
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1];
-  if (!token) return res.sendStatus(401);
 
-  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
-    if (err) return res.sendStatus(403);
-    req.user = user;
+  if (!token) return res.status(401).json({ error: "Token manquant" });
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    req.user = {
+      id: decoded.id,
+      shop_id: decoded.shop_id,
+      role: decoded.role,
+      username: decoded.username
+    };
+
     next();
-  });
+  } catch (err) {
+    return res.status(403).json({ error: "Token invalide" });
+  }
 }
 
 // ==========================
@@ -289,13 +319,21 @@ router.post("/users/:id/reminder", authenticateToken, isAdmin, async (req, res) 
 // ==========================
 //   Infos utilisateur connecté
 // ==========================
-router.get("/me", authenticateToken, async (req, res) => {
+router.get("/me", async (req, res) => {
   try {
+    const authHeader = req.headers["authorization"];
+    const token = authHeader && authHeader.split(" ")[1];
+
+    if (!token) return res.status(401).json({ error: "Token manquant" });
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
     const result = await pool.query(
-      `SELECT id, username, company_name, phone, role, status, plan, 
-              payment_status, payment_method, expiration, amount, upgrade_status 
+      `SELECT id, username, company_name, phone, role, status, 
+              plan, payment_status, payment_method, expiration, 
+              amount, upgrade_status, shop_id
        FROM users WHERE id = $1`,
-      [req.user.id]
+      [decoded.id]
     );
 
     if (result.rows.length === 0) {
@@ -304,7 +342,7 @@ router.get("/me", authenticateToken, async (req, res) => {
 
     res.json(result.rows[0]);
   } catch (err) {
-    console.error("❌ Erreur lors de /auth/me :", err);
+    console.error("❌ Erreur /me :", err);
     res.status(500).json({ error: err.message });
   }
 });
