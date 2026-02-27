@@ -6,9 +6,10 @@ const { verifyToken, requireRole } = require("../middleware/auth");
 const checkSubscription = require("../middleware/subscription");
 
 
-// ======================================================
-// 📂 GET ALL CATEGORIES (par boutique)
-// ======================================================
+/* ======================================================
+   📂 GET ALL CATEGORIES
+====================================================== */
+
 router.get(
   "/",
   verifyToken,
@@ -25,17 +26,19 @@ router.get(
       );
 
       res.json(rows);
+
     } catch (err) {
-      console.error("Erreur GET /categories:", err);
+      console.error("❌ GET /categories:", err);
       res.status(500).json({ error: "Erreur serveur" });
     }
   }
 );
 
 
-// ======================================================
-// ➕ CREATE CATEGORY
-// ======================================================
+/* ======================================================
+   ➕ CREATE CATEGORY
+====================================================== */
+
 router.post(
   "/",
   verifyToken,
@@ -43,11 +46,26 @@ router.post(
   requireRole("owner", "employee"),
   async (req, res) => {
     try {
-      const { name, emoji, couleur } = req.body;
+      let { name, emoji, couleur } = req.body;
 
-      if (!name || name.trim() === "") {
+      if (!name || !name.trim()) {
         return res.status(400).json({
           error: "Le nom de la catégorie est requis"
+        });
+      }
+
+      name = name.trim();
+
+      // 🔥 Empêcher doublon
+      const exists = await db.query(
+        `SELECT id FROM categories 
+         WHERE name = $1 AND shop_id = $2`,
+        [name, req.user.shop_id]
+      );
+
+      if (exists.rowCount > 0) {
+        return res.status(400).json({
+          error: "Cette catégorie existe déjà"
         });
       }
 
@@ -58,7 +76,7 @@ router.post(
          RETURNING id, name, emoji, couleur`,
         [
           req.user.shop_id,
-          name.trim(),
+          name,
           emoji || "🏷️",
           couleur || null
         ]
@@ -67,16 +85,17 @@ router.post(
       res.status(201).json(rows[0]);
 
     } catch (err) {
-      console.error("Erreur POST /categories:", err);
+      console.error("❌ POST /categories:", err);
       res.status(500).json({ error: "Erreur serveur" });
     }
   }
 );
 
 
-// ======================================================
-// ✏️ UPDATE CATEGORY
-// ======================================================
+/* ======================================================
+   ✏️ UPDATE CATEGORY
+====================================================== */
+
 router.patch(
   "/:id",
   verifyToken,
@@ -85,6 +104,7 @@ router.patch(
   async (req, res) => {
     try {
       const categoryId = parseInt(req.params.id, 10);
+
       if (isNaN(categoryId)) {
         return res.status(400).json({ error: "ID invalide" });
       }
@@ -95,7 +115,13 @@ router.patch(
       const values = [];
       let index = 1;
 
+      // 🔥 NAME sécurisé
       if (name !== undefined) {
+        if (!name || !name.trim()) {
+          return res.status(400).json({
+            error: "Nom invalide"
+          });
+        }
         updates.push(`name = $${index++}`);
         values.push(name.trim());
       }
@@ -136,68 +162,63 @@ router.patch(
       res.json(rows[0]);
 
     } catch (err) {
-      console.error("Erreur PATCH /categories:", err);
+      console.error("❌ PATCH /categories:", err);
       res.status(500).json({ error: "Erreur serveur" });
     }
   }
 );
 
 
-// ======================================================
-// ❌ DELETE CATEGORY
-// ======================================================
+/* ======================================================
+   ❌ DELETE CATEGORY
+====================================================== */
+
 router.delete(
   "/:id",
   verifyToken,
   checkSubscription,
-  requireRole("owner"), // 🔒 suppression réservée au propriétaire
+  requireRole("owner"),
   async (req, res) => {
     try {
       const categoryId = parseInt(req.params.id, 10);
+
       if (isNaN(categoryId)) {
         return res.status(400).json({ error: "ID invalide" });
       }
 
-      // Vérifier existence
-      const catCheck = await db.query(
-        `SELECT id 
-         FROM categories 
-         WHERE id = $1 AND shop_id = $2`,
-        [categoryId, req.user.shop_id]
-      );
-
-      if (catCheck.rowCount === 0) {
-        return res.status(404).json({
-          error: "Catégorie non trouvée ou non autorisée"
-        });
-      }
-
-      // Vérifier produits liés
+      // 🔥 Vérifier produits liés DIRECTEMENT
       const prodCheck = await db.query(
-        `SELECT COUNT(*) 
+        `SELECT 1 
          FROM products 
-         WHERE category_id = $1 AND shop_id = $2`,
+         WHERE category_id = $1 AND shop_id = $2
+         LIMIT 1`,
         [categoryId, req.user.shop_id]
       );
 
-      if (parseInt(prodCheck.rows[0].count) > 0) {
+      if (prodCheck.rowCount > 0) {
         return res.status(400).json({
           error: "Impossible de supprimer : catégorie contient des produits"
         });
       }
 
-      await db.query(
+      const { rowCount } = await db.query(
         `DELETE FROM categories 
          WHERE id = $1 AND shop_id = $2`,
         [categoryId, req.user.shop_id]
       );
+
+      if (rowCount === 0) {
+        return res.status(404).json({
+          error: "Catégorie introuvable ou non autorisée"
+        });
+      }
 
       res.json({
         message: "Catégorie supprimée avec succès"
       });
 
     } catch (err) {
-      console.error("Erreur DELETE /categories:", err);
+      console.error("❌ DELETE /categories:", err);
       res.status(500).json({ error: "Erreur serveur" });
     }
   }
