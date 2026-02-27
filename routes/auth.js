@@ -21,6 +21,12 @@ function verifyToken(req, res, next) {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     req.user = decoded;
+
+    // 🔥 Sécurité minimale
+    if (!req.user.shop_id) {
+      return res.status(403).json({ error: "Token invalide (shop manquant)" });
+    }
+
     next();
   } catch (err) {
     return res.status(403).json({ error: "Token invalide" });
@@ -29,7 +35,7 @@ function verifyToken(req, res, next) {
 
 
 /* ======================================================
-   🔒 MIDDLEWARE ROLES UNIVERSEL
+   🔒 MIDDLEWARE ROLES
 ====================================================== */
 
 function requireRole(...allowedRoles) {
@@ -45,7 +51,7 @@ function requireRole(...allowedRoles) {
 
 
 /* ======================================================
-   📝 INSCRIPTION OWNER
+   📝 REGISTER (OWNER = CREATE SHOP)
 ====================================================== */
 
 router.post("/register", async (req, res) => {
@@ -56,6 +62,7 @@ router.post("/register", async (req, res) => {
   }
 
   try {
+    // Vérifier existant
     const existingUser = await pool.query(
       "SELECT id FROM users WHERE username = $1",
       [username]
@@ -67,16 +74,18 @@ router.post("/register", async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
+    // 1️⃣ Créer user
     const userResult = await pool.query(
       `INSERT INTO users 
         (username, password, company_name, phone, role, plan, status)
        VALUES ($1,$2,$3,$4,'owner','Free','Actif')
-       RETURNING *`,
+       RETURNING id, username`,
       [username, hashedPassword, company_name || null, phone || null]
     );
 
     const user = userResult.rows[0];
 
+    // 2️⃣ Créer shop
     const shopResult = await pool.query(
       `INSERT INTO shops (name, owner_id)
        VALUES ($1,$2)
@@ -86,6 +95,7 @@ router.post("/register", async (req, res) => {
 
     const shopId = shopResult.rows[0].id;
 
+    // 3️⃣ Lier user → shop
     await pool.query(
       `UPDATE users SET shop_id=$1 WHERE id=$2`,
       [shopId, user.id]
@@ -97,19 +107,20 @@ router.post("/register", async (req, res) => {
         id: user.id,
         username: user.username,
         role: "owner",
-        shop_id: shopId
+        shop_id: shopId,
+        type: "user"
       }
     });
 
   } catch (err) {
-    console.error(err);
+    console.error("❌ Register:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
 
 /* ======================================================
-   🔑 LOGIN (USERS + EMPLOYEES)
+   🔑 LOGIN (USER + EMPLOYEE)
 ====================================================== */
 
 router.post("/login", async (req, res) => {
@@ -149,7 +160,8 @@ router.post("/login", async (req, res) => {
           username: user.username,
           role: user.role,
           shop_id: user.shop_id,
-          plan: user.plan
+          plan: user.plan,
+          type: "user"
         },
         process.env.JWT_SECRET,
         { expiresIn: "1h" }
@@ -162,7 +174,8 @@ router.post("/login", async (req, res) => {
           username: user.username,
           role: user.role,
           shop_id: user.shop_id,
-          plan: user.plan
+          plan: user.plan,
+          type: "user"
         }
       });
     }
@@ -195,7 +208,7 @@ router.post("/login", async (req, res) => {
         id: employee.id,
         role: employee.role,
         shop_id: employee.shop_id,
-        plan: null
+        type: "employee"
       },
       process.env.JWT_SECRET,
       { expiresIn: "1h" }
@@ -206,12 +219,13 @@ router.post("/login", async (req, res) => {
       user: {
         id: employee.id,
         role: employee.role,
-        shop_id: employee.shop_id
+        shop_id: employee.shop_id,
+        type: "employee"
       }
     });
 
   } catch (err) {
-    console.error("Erreur login:", err);
+    console.error("❌ Login:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -222,27 +236,42 @@ router.post("/login", async (req, res) => {
 ====================================================== */
 
 router.get("/me", verifyToken, async (req, res) => {
+  try {
 
-  if (req.user.role === "employee") {
-    const emp = await pool.query(
-      "SELECT id, email, role, shop_id FROM employees WHERE id=$1",
+    if (req.user.type === "employee") {
+      const emp = await pool.query(
+        "SELECT id, email, role, shop_id FROM employees WHERE id=$1",
+        [req.user.id]
+      );
+
+      if (emp.rows.length === 0) {
+        return res.status(404).json({ error: "Employé introuvable" });
+      }
+
+      return res.json(emp.rows[0]);
+    }
+
+    const user = await pool.query(
+      `SELECT id, username, role, shop_id, plan
+       FROM users WHERE id=$1`,
       [req.user.id]
     );
-    return res.json(emp.rows[0]);
+
+    if (user.rows.length === 0) {
+      return res.status(404).json({ error: "Utilisateur introuvable" });
+    }
+
+    res.json(user.rows[0]);
+
+  } catch (err) {
+    console.error("❌ /me:", err);
+    res.status(500).json({ error: err.message });
   }
-
-  const user = await pool.query(
-    `SELECT id, username, role, shop_id, plan
-     FROM users WHERE id=$1`,
-    [req.user.id]
-  );
-
-  res.json(user.rows[0]);
 });
 
 
 /* ======================================================
-   👑 SUPER ADMIN ONLY
+   👑 SUPER ADMIN
 ====================================================== */
 
 router.get(
@@ -256,6 +285,7 @@ router.get(
     res.json(result.rows);
   }
 );
+
 
 module.exports = {
   router,
