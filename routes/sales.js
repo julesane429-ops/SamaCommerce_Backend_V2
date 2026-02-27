@@ -1,257 +1,307 @@
 const express = require("express");
 const router = express.Router();
 const db = require("../db");
-const verifyToken = require("../middleware/auth");
+
+const { verifyToken, requireRole } = require("../middleware/auth");
+const checkSubscription = require("../middleware/subscription");
 
 
 // ======================================================
 // 📊 GET SALES
 // ======================================================
-router.get("/", verifyToken, async (req, res) => {
-  try {
-    const result = await db.query(
-      `SELECT s.*, p.name AS product_name
-       FROM sales s
-       JOIN products p ON s.product_id = p.id
-       WHERE s.shop_id = $1
-       ORDER BY s.created_at DESC`,
-      [req.user.shop_id]
-    );
+router.get(
+  "/",
+  verifyToken,
+  checkSubscription,
+  requireRole("owner", "employee"),
+  async (req, res) => {
+    try {
+      const { rows } = await db.query(
+        `SELECT s.*, p.name AS product_name
+         FROM sales s
+         JOIN products p ON s.product_id = p.id
+         WHERE s.shop_id = $1
+         ORDER BY s.created_at DESC`,
+        [req.user.shop_id]
+      );
 
-    res.json(result.rows);
-  } catch (err) {
-    console.error("Erreur GET /sales:", err);
-    res.status(500).json({ error: "Erreur serveur" });
+      res.json(rows);
+    } catch (err) {
+      console.error("Erreur GET /sales:", err);
+      res.status(500).json({ error: "Erreur serveur" });
+    }
   }
-});
+);
 
 
 // ======================================================
 // ➕ CREATE SALE (transaction sécurisée)
 // ======================================================
-router.post("/", verifyToken, async (req, res) => {
-  const { product_id, quantity, payment_method, client_name, client_phone, due_date } = req.body;
+router.post(
+  "/",
+  verifyToken,
+  checkSubscription,
+  requireRole("owner", "employee"),
+  async (req, res) => {
 
-  if (!product_id || !quantity || quantity <= 0) {
-    return res.status(400).json({ error: "Données invalides" });
-  }
+    const {
+      product_id,
+      quantity,
+      payment_method,
+      client_name,
+      client_phone,
+      due_date
+    } = req.body;
 
-  const client = await db.connect();
+    const parsedProductId = Number(product_id);
+    const parsedQuantity = Number(quantity);
 
-  try {
-    await client.query("BEGIN");
-
-    const productResult = await client.query(
-      `SELECT price, stock 
-       FROM products 
-       WHERE id = $1 AND shop_id = $2
-       FOR UPDATE`,
-      [product_id, req.user.shop_id]
-    );
-
-    const product = productResult.rows[0];
-
-    if (!product) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "Produit introuvable" });
+    if (!parsedProductId || !parsedQuantity || parsedQuantity <= 0) {
+      return res.status(400).json({ error: "Données invalides" });
     }
 
-    if (product.stock < quantity) {
+    const client = await db.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      const productResult = await client.query(
+        `SELECT price, stock
+         FROM products
+         WHERE id = $1 AND shop_id = $2
+         FOR UPDATE`,
+        [parsedProductId, req.user.shop_id]
+      );
+
+      const product = productResult.rows[0];
+
+      if (!product) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "Produit introuvable" });
+      }
+
+      if (product.stock < parsedQuantity) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: "Stock insuffisant" });
+      }
+
+      const total = product.price * parsedQuantity;
+      const paid = payment_method === "credit" ? false : true;
+
+      const saleResult = await client.query(
+        `INSERT INTO sales
+         (product_id, quantity, total, payment_method,
+          shop_id, client_name, client_phone, due_date, paid)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+         RETURNING *`,
+        [
+          parsedProductId,
+          parsedQuantity,
+          total,
+          payment_method || "cash",
+          req.user.shop_id,
+          client_name || null,
+          client_phone || null,
+          due_date || null,
+          paid
+        ]
+      );
+
+      await client.query(
+        `UPDATE products
+         SET stock = stock - $1
+         WHERE id = $2 AND shop_id = $3`,
+        [parsedQuantity, parsedProductId, req.user.shop_id]
+      );
+
+      await client.query("COMMIT");
+
+      res.status(201).json(saleResult.rows[0]);
+
+    } catch (err) {
       await client.query("ROLLBACK");
-      return res.status(400).json({ error: "Stock insuffisant" });
+      console.error("Erreur POST /sales:", err);
+      res.status(500).json({ error: "Erreur serveur" });
+    } finally {
+      client.release();
     }
-
-    const total = product.price * quantity;
-    const paid = payment_method === "credit" ? false : true;
-
-    const saleResult = await client.query(
-      `INSERT INTO sales
-       (product_id, quantity, total, payment_method, user_id, shop_id, 
-        client_name, client_phone, due_date, paid)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-       RETURNING *`,
-      [
-        product_id,
-        quantity,
-        total,
-        payment_method,
-        req.user.id,
-        req.user.shop_id,
-        client_name || null,
-        client_phone || null,
-        due_date || null,
-        paid
-      ]
-    );
-
-    await client.query(
-      `UPDATE products 
-       SET stock = stock - $1 
-       WHERE id = $2 AND shop_id = $3`,
-      [quantity, product_id, req.user.shop_id]
-    );
-
-    await client.query("COMMIT");
-
-    res.status(201).json(saleResult.rows[0]);
-
-  } catch (err) {
-    await client.query("ROLLBACK");
-    console.error("Erreur POST /sales:", err);
-    res.status(500).json({ error: "Erreur serveur" });
-  } finally {
-    client.release();
   }
-});
+);
 
 
 // ======================================================
 // ✏️ UPDATE SALE
 // ======================================================
-router.patch("/:id", verifyToken, async (req, res) => {
-  const id = parseInt(req.params.id, 10);
-  const { quantity, payment_method, paid, repayment_method } = req.body;
+router.patch(
+  "/:id",
+  verifyToken,
+  checkSubscription,
+  requireRole("owner", "employee"),
+  async (req, res) => {
 
-  const client = await db.connect();
-
-  try {
-    await client.query("BEGIN");
-
-    const saleResult = await client.query(
-      `SELECT * FROM sales 
-       WHERE id = $1 AND shop_id = $2
-       FOR UPDATE`,
-      [id, req.user.shop_id]
-    );
-
-    if (saleResult.rowCount === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "Vente introuvable" });
+    const saleId = parseInt(req.params.id, 10);
+    if (isNaN(saleId)) {
+      return res.status(400).json({ error: "ID invalide" });
     }
 
-    const sale = saleResult.rows[0];
+    const { quantity, payment_method, paid, repayment_method } = req.body;
 
-    if (quantity !== undefined && quantity > 0 && quantity !== sale.quantity) {
-      const productResult = await client.query(
-        `SELECT price, stock 
-         FROM products 
+    const client = await db.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      const saleResult = await client.query(
+        `SELECT * FROM sales
          WHERE id = $1 AND shop_id = $2
          FOR UPDATE`,
-        [sale.product_id, req.user.shop_id]
+        [saleId, req.user.shop_id]
       );
 
-      const product = productResult.rows[0];
-
-      const diff = quantity - sale.quantity;
-
-      if (diff > 0 && product.stock < diff) {
+      if (saleResult.rowCount === 0) {
         await client.query("ROLLBACK");
-        return res.status(400).json({ error: "Stock insuffisant" });
+        return res.status(404).json({ error: "Vente introuvable" });
       }
 
-      await client.query(
-        `UPDATE sales 
-         SET quantity = $1,
-             total = $2,
-             payment_method = COALESCE($3, payment_method),
-             paid = COALESCE($4, paid),
-             repayment_method = COALESCE($5, repayment_method)
-         WHERE id = $6 AND shop_id = $7`,
-        [
-          quantity,
-          product.price * quantity,
-          payment_method,
-          paid,
-          repayment_method,
-          id,
-          req.user.shop_id
-        ]
+      const sale = saleResult.rows[0];
+
+      if (quantity !== undefined && Number(quantity) > 0 && Number(quantity) !== sale.quantity) {
+
+        const newQuantity = Number(quantity);
+        const diff = newQuantity - sale.quantity;
+
+        const productResult = await client.query(
+          `SELECT price, stock
+           FROM products
+           WHERE id = $1 AND shop_id = $2
+           FOR UPDATE`,
+          [sale.product_id, req.user.shop_id]
+        );
+
+        const product = productResult.rows[0];
+
+        if (diff > 0 && product.stock < diff) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({ error: "Stock insuffisant" });
+        }
+
+        await client.query(
+          `UPDATE sales
+           SET quantity = $1,
+               total = $2,
+               payment_method = COALESCE($3, payment_method),
+               paid = COALESCE($4, paid),
+               repayment_method = COALESCE($5, repayment_method)
+           WHERE id = $6 AND shop_id = $7`,
+          [
+            newQuantity,
+            product.price * newQuantity,
+            payment_method,
+            paid,
+            repayment_method,
+            saleId,
+            req.user.shop_id
+          ]
+        );
+
+        await client.query(
+          `UPDATE products
+           SET stock = stock - $1
+           WHERE id = $2 AND shop_id = $3`,
+          [diff, sale.product_id, req.user.shop_id]
+        );
+
+      } else {
+
+        await client.query(
+          `UPDATE sales
+           SET payment_method = COALESCE($1, payment_method),
+               paid = COALESCE($2, paid),
+               repayment_method = COALESCE($3, repayment_method)
+           WHERE id = $4 AND shop_id = $5`,
+          [payment_method, paid, repayment_method, saleId, req.user.shop_id]
+        );
+      }
+
+      await client.query("COMMIT");
+
+      const updated = await db.query(
+        `SELECT * FROM sales
+         WHERE id = $1 AND shop_id = $2`,
+        [saleId, req.user.shop_id]
       );
 
-      await client.query(
-        `UPDATE products 
-         SET stock = stock - $1
-         WHERE id = $2 AND shop_id = $3`,
-        [diff, sale.product_id, req.user.shop_id]
-      );
-    } else {
-      await client.query(
-        `UPDATE sales
-         SET payment_method = COALESCE($1, payment_method),
-             paid = COALESCE($2, paid),
-             repayment_method = COALESCE($3, repayment_method)
-         WHERE id = $4 AND shop_id = $5`,
-        [payment_method, paid, repayment_method, id, req.user.shop_id]
-      );
+      res.json(updated.rows[0]);
+
+    } catch (err) {
+      await client.query("ROLLBACK");
+      console.error("Erreur PATCH /sales:", err);
+      res.status(500).json({ error: "Erreur serveur" });
+    } finally {
+      client.release();
     }
-
-    await client.query("COMMIT");
-
-    const updated = await db.query(
-      `SELECT * FROM sales 
-       WHERE id = $1 AND shop_id = $2`,
-      [id, req.user.shop_id]
-    );
-
-    res.json(updated.rows[0]);
-
-  } catch (err) {
-    await client.query("ROLLBACK");
-    console.error("Erreur PATCH /sales:", err);
-    res.status(500).json({ error: "Erreur serveur" });
-  } finally {
-    client.release();
   }
-});
+);
 
 
 // ======================================================
 // ❌ DELETE SALE (remet stock)
 // ======================================================
-router.delete("/:id", verifyToken, async (req, res) => {
-  const client = await db.connect();
+router.delete(
+  "/:id",
+  verifyToken,
+  checkSubscription,
+  requireRole("owner"), // 🔒 Suppression réservée au propriétaire
+  async (req, res) => {
 
-  try {
-    await client.query("BEGIN");
-
-    const saleResult = await client.query(
-      `SELECT * FROM sales 
-       WHERE id = $1 AND shop_id = $2`,
-      [req.params.id, req.user.shop_id]
-    );
-
-    if (saleResult.rowCount === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "Vente introuvable" });
+    const saleId = parseInt(req.params.id, 10);
+    if (isNaN(saleId)) {
+      return res.status(400).json({ error: "ID invalide" });
     }
 
-    const sale = saleResult.rows[0];
+    const client = await db.connect();
 
-    // 🔄 Remettre stock
-    await client.query(
-      `UPDATE products 
-       SET stock = stock + $1 
-       WHERE id = $2 AND shop_id = $3`,
-      [sale.quantity, sale.product_id, req.user.shop_id]
-    );
+    try {
+      await client.query("BEGIN");
 
-    await client.query(
-      `DELETE FROM sales 
-       WHERE id = $1 AND shop_id = $2`,
-      [req.params.id, req.user.shop_id]
-    );
+      const saleResult = await client.query(
+        `SELECT * FROM sales
+         WHERE id = $1 AND shop_id = $2`,
+        [saleId, req.user.shop_id]
+      );
 
-    await client.query("COMMIT");
+      if (saleResult.rowCount === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "Vente introuvable" });
+      }
 
-    res.json({ message: "Vente annulée et stock restauré" });
+      const sale = saleResult.rows[0];
 
-  } catch (err) {
-    await client.query("ROLLBACK");
-    console.error("Erreur DELETE /sales:", err);
-    res.status(500).json({ error: "Erreur serveur" });
-  } finally {
-    client.release();
+      await client.query(
+        `UPDATE products
+         SET stock = stock + $1
+         WHERE id = $2 AND shop_id = $3`,
+        [sale.quantity, sale.product_id, req.user.shop_id]
+      );
+
+      await client.query(
+        `DELETE FROM sales
+         WHERE id = $1 AND shop_id = $2`,
+        [saleId, req.user.shop_id]
+      );
+
+      await client.query("COMMIT");
+
+      res.json({ message: "Vente annulée et stock restauré" });
+
+    } catch (err) {
+      await client.query("ROLLBACK");
+      console.error("Erreur DELETE /sales:", err);
+      res.status(500).json({ error: "Erreur serveur" });
+    } finally {
+      client.release();
+    }
   }
-});
+);
 
 module.exports = router;
