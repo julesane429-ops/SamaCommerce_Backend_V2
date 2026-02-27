@@ -5,7 +5,6 @@ const db = require("../db");
 const { verifyToken, requireRole } = require("../middleware/auth");
 const checkSubscription = require("../middleware/subscription");
 
-
 // ======================================================
 // 📦 GET ALL PRODUCTS (par boutique)
 // ======================================================
@@ -32,7 +31,6 @@ router.get(
   }
 );
 
-
 // ======================================================
 // 📦 GET ONE PRODUCT
 // ======================================================
@@ -43,8 +41,9 @@ router.get(
   requireRole("owner", "employee"),
   async (req, res) => {
     try {
-      const productId = parseInt(req.params.id, 10);
-      if (isNaN(productId)) {
+      const productId = Number(req.params.id);
+
+      if (!productId) {
         return res.status(400).json({ error: "ID invalide" });
       }
 
@@ -69,7 +68,6 @@ router.get(
   }
 );
 
-
 // ======================================================
 // ➕ CREATE PRODUCT
 // ======================================================
@@ -91,27 +89,25 @@ router.post(
       const parsedStock = Number(stock) || 0;
       const parsedPriceAchat = Number(price_achat) || 0;
 
-      // 🔐 Vérifier que la catégorie appartient à la boutique
+      // 🔐 Vérification catégorie
       if (parsedCategory) {
         const catCheck = await db.query(
-          `SELECT id
-           FROM categories
-           WHERE id = $1 AND shop_id = $2`,
+          `SELECT id FROM categories WHERE id = $1 AND shop_id = $2`,
           [parsedCategory, req.user.shop_id]
         );
 
         if (catCheck.rows.length === 0) {
           return res.status(403).json({
-            error: "Catégorie non autorisée pour cette boutique"
+            error: "Catégorie non autorisée"
           });
         }
       }
 
       const { rows } = await db.query(
         `INSERT INTO products
-          (name, category_id, scent, price, stock, price_achat, shop_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)
-         RETURNING *`,
+        (name, category_id, scent, price, stock, price_achat, shop_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7)
+        RETURNING *`,
         [
           name.trim(),
           parsedCategory,
@@ -132,7 +128,6 @@ router.post(
   }
 );
 
-
 // ======================================================
 // ✏️ UPDATE PRODUCT
 // ======================================================
@@ -143,8 +138,9 @@ router.patch(
   requireRole("owner", "employee"),
   async (req, res) => {
     try {
-      const productId = parseInt(req.params.id, 10);
-      if (isNaN(productId)) {
+      const productId = Number(req.params.id);
+
+      if (!productId) {
         return res.status(400).json({ error: "ID invalide" });
       }
 
@@ -164,6 +160,7 @@ router.patch(
       for (const field of allowedFields) {
         if (req.body[field] !== undefined) {
 
+          // 🔐 Vérification catégorie
           if (field === "category_id" && req.body[field]) {
             const catCheck = await db.query(
               `SELECT id FROM categories
@@ -173,7 +170,7 @@ router.patch(
 
             if (catCheck.rows.length === 0) {
               return res.status(403).json({
-                error: "Catégorie non autorisée pour cette boutique"
+                error: "Catégorie non autorisée"
               });
             }
           }
@@ -194,8 +191,7 @@ router.patch(
         return res.status(400).json({ error: "Aucun champ à mettre à jour" });
       }
 
-      values.push(productId);
-      values.push(req.user.shop_id);
+      values.push(productId, req.user.shop_id);
 
       const { rows } = await db.query(
         `UPDATE products
@@ -220,7 +216,6 @@ router.patch(
   }
 );
 
-
 // ======================================================
 // ❌ DELETE PRODUCT
 // ======================================================
@@ -228,11 +223,12 @@ router.delete(
   "/:id",
   verifyToken,
   checkSubscription,
-  requireRole("owner"), // 🔒 Suppression réservée au propriétaire
+  requireRole("owner"),
   async (req, res) => {
     try {
-      const productId = parseInt(req.params.id, 10);
-      if (isNaN(productId)) {
+      const productId = Number(req.params.id);
+
+      if (!productId) {
         return res.status(400).json({ error: "ID invalide" });
       }
 
