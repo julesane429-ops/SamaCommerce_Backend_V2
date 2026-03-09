@@ -1,257 +1,145 @@
-const express = require("express");
+// routes/products.js
+const express = require('express');
 const router = express.Router();
-const db = require("../db");
+const db = require('../db');
+const verifyToken = require('../middleware/auth');
 
-const { verifyToken, requireRole } = require("../middleware/auth");
-const checkSubscription = require("../middleware/subscription");
+// GET /products : Liste uniquement les produits de l'utilisateur connecté
+router.get('/', verifyToken, async (req, res) => {
+  console.log("👤 Utilisateur authentifié:", req.user);
+  try {
+    const userId = req.user.id;
+    const result = await db.query(
+      'SELECT * FROM products WHERE user_id = $1 ORDER BY id DESC',
+      [userId]
+    );
 
-// ======================================================
-// 📦 GET ALL PRODUCTS (par boutique)
-// ======================================================
-router.get(
-  "/",
-  verifyToken,
-  checkSubscription,
-  requireRole("owner", "employee"),
-  async (req, res) => {
-    try {
-      const { rows } = await db.query(
-        `SELECT *
-         FROM products
-         WHERE shop_id = $1
-         ORDER BY id DESC`,
-        [req.user.shop_id]
-      );
-
-      res.json(rows);
-    } catch (err) {
-      console.error("Erreur GET /products:", err);
-      res.status(500).json({ error: "Erreur serveur" });
-    }
+    console.log('📤 GET /products renvoie :', result.rows);
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Erreur GET /products:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
   }
-);
+});
 
-// ======================================================
-// 📦 GET ONE PRODUCT
-// ======================================================
-router.get(
-  "/:id",
-  verifyToken,
-  checkSubscription,
-  requireRole("owner", "employee"),
-  async (req, res) => {
-    try {
-      const productId = Number(req.params.id);
+// ✅ GET /products/:id : Récupère un produit spécifique (sécurisé par user_id)
+router.get('/:id', verifyToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const productId = req.params.id;
 
-      if (!productId) {
-        return res.status(400).json({ error: "ID invalide" });
-      }
+    const result = await db.query(
+      'SELECT * FROM products WHERE id = $1 AND user_id = $2',
+      [productId, userId]
+    );
 
-      const { rows } = await db.query(
-        `SELECT *
-         FROM products
-         WHERE id = $1 AND shop_id = $2`,
-        [productId, req.user.shop_id]
-      );
-
-      if (rows.length === 0) {
-        return res.status(404).json({
-          error: "Produit introuvable ou non autorisé"
-        });
-      }
-
-      res.json(rows[0]);
-    } catch (err) {
-      console.error("Erreur GET /products/:id:", err);
-      res.status(500).json({ error: "Erreur serveur" });
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Produit introuvable ou non autorisé.' });
     }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Erreur GET /products/:id:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
   }
-);
+});
 
-// ======================================================
-// ➕ CREATE PRODUCT
-// ======================================================
-router.post(
-  "/",
-  verifyToken,
-  checkSubscription,
-  requireRole("owner", "employee"),
-  async (req, res) => {
-    try {
-      const { name, category_id, scent, price, stock, price_achat } = req.body;
 
-      if (!name || name.trim() === "") {
-        return res.status(400).json({ error: "Nom du produit requis" });
-      }
+// POST /products : Ajoute un produit lié à l'utilisateur connecté
+router.post('/', verifyToken, async (req, res) => {
+  try {
+    console.log('📩 POST /products reçu :', req.body);
+    console.log('👤 Utilisateur connecté :', req.user);
 
-      const parsedCategory = category_id ? Number(category_id) : null;
-      const parsedPrice = Number(price) || 0;
-      const parsedStock = Number(stock) || 0;
-      const parsedPriceAchat = Number(price_achat) || 0;
+    const { name, category_id, scent, price, stock, price_achat } = req.body;
+    const userId = req.user.id;
 
-      // 🔐 Vérification catégorie
-      if (parsedCategory) {
-        const catCheck = await db.query(
-          `SELECT id FROM categories WHERE id = $1 AND shop_id = $2`,
-          [parsedCategory, req.user.shop_id]
-        );
+    const result = await db.query(
+      `INSERT INTO products (name, category_id, scent, price, stock, price_achat, user_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING *`,
+      [
+        name,
+        category_id,
+        scent,
+        Number.isFinite(+price) ? +price : 0,
+        Number.isFinite(+stock) ? +stock : 0,
+        Number.isFinite(+price_achat) ? +price_achat : 0,
+        userId
+      ]
+    );
 
-        if (catCheck.rows.length === 0) {
-          return res.status(403).json({
-            error: "Catégorie non autorisée"
-          });
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error('Erreur POST /products:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// PATCH /products/:id : Met à jour uniquement les produits appartenant à l'utilisateur
+router.patch('/:id', verifyToken, async (req, res) => {
+  try {
+    console.log('📩 PATCH /products reçu :', req.body);
+
+    const fields = ['name', 'category_id', 'scent', 'price', 'stock', 'price_achat'];
+    const set = [];
+    const values = [];
+    let i = 1;
+
+    for (const f of fields) {
+      if (req.body.hasOwnProperty(f)) {
+        if (['price', 'stock', 'price_achat', 'category_id'].includes(f)) {
+          values.push(Number.isFinite(+req.body[f]) ? +req.body[f] : 0);
+        } else {
+          values.push(req.body[f]);
         }
+        set.push(`${f} = $${i++}`);
       }
-
-      const { rows } = await db.query(
-        `INSERT INTO products
-        (name, category_id, scent, price, stock, price_achat, shop_id)
-        VALUES ($1,$2,$3,$4,$5,$6,$7)
-        RETURNING *`,
-        [
-          name.trim(),
-          parsedCategory,
-          scent || null,
-          parsedPrice,
-          parsedStock,
-          parsedPriceAchat,
-          req.user.shop_id
-        ]
-      );
-
-      res.status(201).json(rows[0]);
-
-    } catch (err) {
-      console.error("Erreur POST /products:", err);
-      res.status(500).json({ error: "Erreur serveur" });
     }
-  }
-);
 
-// ======================================================
-// ✏️ UPDATE PRODUCT
-// ======================================================
-router.patch(
-  "/:id",
-  verifyToken,
-  checkSubscription,
-  requireRole("owner", "employee"),
-  async (req, res) => {
-    try {
-      const productId = Number(req.params.id);
-
-      if (!productId) {
-        return res.status(400).json({ error: "ID invalide" });
-      }
-
-      const allowedFields = [
-        "name",
-        "category_id",
-        "scent",
-        "price",
-        "stock",
-        "price_achat"
-      ];
-
-      const updates = [];
-      const values = [];
-      let index = 1;
-
-      for (const field of allowedFields) {
-        if (req.body[field] !== undefined) {
-
-          // 🔐 Vérification catégorie
-          if (field === "category_id" && req.body[field]) {
-            const catCheck = await db.query(
-              `SELECT id FROM categories
-               WHERE id = $1 AND shop_id = $2`,
-              [Number(req.body[field]), req.user.shop_id]
-            );
-
-            if (catCheck.rows.length === 0) {
-              return res.status(403).json({
-                error: "Catégorie non autorisée"
-              });
-            }
-          }
-
-          updates.push(`${field} = $${index}`);
-
-          if (["price", "stock", "price_achat", "category_id"].includes(field)) {
-            values.push(Number(req.body[field]) || 0);
-          } else {
-            values.push(req.body[field]);
-          }
-
-          index++;
-        }
-      }
-
-      if (updates.length === 0) {
-        return res.status(400).json({ error: "Aucun champ à mettre à jour" });
-      }
-
-      values.push(productId, req.user.shop_id);
-
-      const { rows } = await db.query(
-        `UPDATE products
-         SET ${updates.join(", ")}
-         WHERE id = $${index++} AND shop_id = $${index}
-         RETURNING *`,
-        values
-      );
-
-      if (rows.length === 0) {
-        return res.status(404).json({
-          error: "Produit introuvable ou non autorisé"
-        });
-      }
-
-      res.json(rows[0]);
-
-    } catch (err) {
-      console.error("Erreur PATCH /products:", err);
-      res.status(500).json({ error: "Erreur serveur" });
+    if (set.length === 0) {
+      return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
     }
-  }
-);
 
-// ======================================================
-// ❌ DELETE PRODUCT
-// ======================================================
-router.delete(
-  "/:id",
-  verifyToken,
-  checkSubscription,
-  requireRole("owner"),
-  async (req, res) => {
-    try {
-      const productId = Number(req.params.id);
+    // Ajout du filtre par user_id pour sécuriser la modification
+    values.push(req.params.id);
+    values.push(req.user.id);
 
-      if (!productId) {
-        return res.status(400).json({ error: "ID invalide" });
-      }
+    const result = await db.query(
+      `UPDATE products SET ${set.join(', ')}
+       WHERE id = $${i++} AND user_id = $${i}
+       RETURNING *`,
+      values
+    );
 
-      const { rows } = await db.query(
-        `DELETE FROM products
-         WHERE id = $1 AND shop_id = $2
-         RETURNING *`,
-        [productId, req.user.shop_id]
-      );
-
-      if (rows.length === 0) {
-        return res.status(404).json({
-          error: "Produit introuvable ou non autorisé"
-        });
-      }
-
-      res.json({ message: "Produit supprimé avec succès" });
-
-    } catch (err) {
-      console.error("Erreur DELETE /products:", err);
-      res.status(500).json({ error: "Erreur serveur" });
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Produit introuvable ou non autorisé.' });
     }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Erreur PATCH /products/:id:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
   }
-);
+});
+
+// DELETE /products/:id : Supprime uniquement les produits appartenant à l'utilisateur
+router.delete('/:id', verifyToken, async (req, res) => {
+  try {
+    const result = await db.query(
+      'DELETE FROM products WHERE id = $1 AND user_id = $2 RETURNING *',
+      [req.params.id, req.user.id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Produit introuvable ou non autorisé.' });
+    }
+
+    res.json({ message: 'Produit supprimé' });
+  } catch (err) {
+    console.error('Erreur DELETE /products/:id:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
 
 module.exports = router;
