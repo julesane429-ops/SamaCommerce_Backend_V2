@@ -443,5 +443,88 @@ router.post("/verify-2fa", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// ═══════════════════════════════════════════════════════════
+// PATCH routes/auth.js
+// Ajouter ces 2 routes juste avant module.exports = router;
+// ═══════════════════════════════════════════════════════════
 
+// ── PATCH /auth/me — Mettre à jour le profil ──
+router.patch("/me", authenticateToken, async (req, res) => {
+  try {
+    const { company_name, phone, current_password, new_password } = req.body;
+    const userId = req.user.id;
+
+    // Récupérer l'utilisateur courant
+    const { rows } = await pool.query(
+      "SELECT * FROM users WHERE id = $1",
+      [userId]
+    );
+    if (!rows.length) return res.status(404).json({ error: "Utilisateur introuvable" });
+    const user = rows[0];
+
+    // Si changement de mot de passe demandé
+    if (new_password) {
+      if (!current_password) {
+        return res.status(400).json({ error: "Mot de passe actuel requis" });
+      }
+      const valid = await bcrypt.compare(current_password, user.password);
+      if (!valid) {
+        return res.status(401).json({ error: "Mot de passe actuel incorrect" });
+      }
+      if (new_password.length < 6) {
+        return res.status(400).json({ error: "Le nouveau mot de passe doit faire au moins 6 caractères" });
+      }
+    }
+
+    // Construire la mise à jour dynamiquement
+    const fields = [], values = [];
+    let i = 1;
+
+    if (company_name !== undefined) { fields.push(`company_name = $${i++}`); values.push(company_name); }
+    if (phone !== undefined)        { fields.push(`phone = $${i++}`);        values.push(phone); }
+    if (new_password) {
+      const hashed = await bcrypt.hash(new_password, 10);
+      fields.push(`password = $${i++}`); values.push(hashed);
+    }
+
+    if (!fields.length) {
+      return res.status(400).json({ error: "Aucun champ à mettre à jour" });
+    }
+
+    values.push(userId);
+    const result = await pool.query(
+      `UPDATE users SET ${fields.join(", ")} WHERE id = $${i}
+       RETURNING id, username, company_name, phone, role, plan, expiration, upgrade_status`,
+      values
+    );
+
+    res.json({ message: "Profil mis à jour", user: result.rows[0] });
+  } catch (err) {
+    console.error("❌ PATCH /auth/me:", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── GET /auth/me/stats — Stats du compte (nb produits, ventes, crédits) ──
+router.get("/me/stats", authenticateToken, async (req, res) => {
+  try {
+    const uid = req.user.id;
+
+    const [prodQ, venteQ, creditQ] = await Promise.all([
+      pool.query("SELECT COUNT(*)::int AS total FROM products WHERE user_id = $1", [uid]),
+      pool.query("SELECT COUNT(*)::int AS total, COALESCE(SUM(total),0) AS ca FROM sales WHERE user_id = $1", [uid]),
+      pool.query("SELECT COUNT(*)::int AS total FROM sales WHERE user_id = $1 AND payment_method = 'credit' AND paid = false", [uid]),
+    ]);
+
+    res.json({
+      nb_produits:  prodQ.rows[0].total,
+      nb_ventes:    venteQ.rows[0].total,
+      ca_total:     Number(venteQ.rows[0].ca),
+      credits_ouverts: creditQ.rows[0].total,
+    });
+  } catch (err) {
+    console.error("❌ GET /auth/me/stats:", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
 module.exports = router;
