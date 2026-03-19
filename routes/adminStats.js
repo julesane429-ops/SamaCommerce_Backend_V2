@@ -328,6 +328,70 @@ router.get("/overview", verifyToken, isAdmin, async (req, res) => {
     res.status(500).json({ error: "Erreur serveur" });
   }
 });
+// ═══════════════════════════════════════════════════════════
+// PATCH routes/adminStats.js
+// Ajouter ces 3 routes à la fin du fichier existant,
+// avant module.exports = router;
+// ═══════════════════════════════════════════════════════════
 
+const verifyToken  = require('../middleware/auth');
+const isAdmin      = (req, res, next) => {
+  if (req.user?.role !== 'admin') return res.status(403).json({ error: 'Admin requis' });
+  next();
+};
+
+// ── GET /admin-stats/clients ──
+// Nombre total de clients enregistrés
+router.get('/clients', verifyToken, isAdmin, async (req, res) => {
+  try {
+    const { rows } = await db.query('SELECT COUNT(*)::int AS total FROM clients');
+    res.json({ total: rows[0].total });
+  } catch (err) {
+    console.error('GET /admin-stats/clients:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// ── GET /admin-stats/commandes ──
+// Commandes en attente (en_attente + confirmee)
+router.get('/commandes', verifyToken, isAdmin, async (req, res) => {
+  try {
+    const { rows } = await db.query(`
+      SELECT
+        COUNT(*)::int                                                         AS total,
+        COUNT(*) FILTER (WHERE status IN ('en_attente','confirmee'))::int     AS en_attente,
+        COUNT(*) FILTER (WHERE status = 'recue')::int                        AS recues,
+        COALESCE(SUM(total), 0)::numeric                                      AS valeur_totale
+      FROM commandes
+    `);
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('GET /admin-stats/commandes:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// ── GET /admin-stats/livraisons ──
+// Livraisons en retard (en_transit depuis > 3 jours)
+router.get('/livraisons', verifyToken, isAdmin, async (req, res) => {
+  try {
+    const { rows } = await db.query(`
+      SELECT
+        COUNT(*)::int                                                                   AS total,
+        COUNT(*) FILTER (WHERE status = 'en_transit')::int                             AS en_transit,
+        COUNT(*) FILTER (WHERE status = 'livree')::int                                 AS livrees,
+        COUNT(*) FILTER (WHERE status = 'probleme')::int                               AS problemes,
+        COUNT(*) FILTER (
+          WHERE status = 'en_transit'
+          AND created_at < NOW() - INTERVAL '3 days'
+        )::int                                                                          AS en_retard
+      FROM livraisons
+    `);
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('GET /admin-stats/livraisons:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
 
 module.exports = router;
