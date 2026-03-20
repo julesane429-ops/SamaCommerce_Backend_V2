@@ -17,7 +17,10 @@ const clientsRoutes      = require('./routes/clients');
 const fournisseursRoutes = require('./routes/fournisseurs');
 const commandesRoutes    = require('./routes/commandes');
 const livraisonsRoutes   = require('./routes/livraisons');
-
+const membersRoutes = require('./routes/members');
+const returnsRoutes = require('./routes/returns');
+const demoRoutes    = require('./routes/demo');
+const caisseRoutes  = require('./routes/caisse');
 // ── CORS ──
 const allowedOrigins = [
   'https://samacommerce-frontend-v2-1.onrender.com',
@@ -68,6 +71,10 @@ app.use('/clients',      clientsRoutes);
 app.use('/fournisseurs', fournisseursRoutes);
 app.use('/commandes',    commandesRoutes);
 app.use('/livraisons',   livraisonsRoutes);
+app.use('/members',  membersRoutes);
+app.use('/returns',  returnsRoutes);
+app.use('/demo',     demoRoutes);
+app.use('/caisse',   caisseRoutes);
 
 
 // Servir les fichiers statiques
