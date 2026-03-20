@@ -157,6 +157,7 @@ router.post("/login", async (req, res) => {
 
     res.json({
       token,
+      refresh_token: refreshToken,
       user: {
         id: user.id,
         email: user.username,
@@ -527,4 +528,69 @@ router.get("/me/stats", authenticateToken, async (req, res) => {
     res.status(500).json({ error: "Erreur serveur" });
   }
 });
+
+const crypto = require('crypto');
+ 
+// ── POST /auth/refresh ──
+// Renouveler silencieusement le token JWT
+router.post('/refresh', async (req, res) => {
+  const { refresh_token } = req.body;
+  if (!refresh_token) return res.status(400).json({ error: 'refresh_token manquant' });
+ 
+  try {
+    // Vérifier que le refresh token existe et n'est pas révoqué
+    const { rows } = await pool.query(
+      `SELECT rt.*, u.id as uid, u.username, u.role, u.status
+       FROM refresh_tokens rt
+       JOIN users u ON rt.user_id = u.id
+       WHERE rt.token = $1
+         AND rt.revoked = false
+         AND rt.expires_at > NOW()`,
+      [refresh_token]
+    );
+ 
+    if (!rows.length) {
+      return res.status(401).json({ error: 'Refresh token invalide ou expiré' });
+    }
+ 
+    const row = rows[0];
+ 
+    if (row.status === 'Bloqué') {
+      return res.status(403).json({ error: 'Compte bloqué' });
+    }
+ 
+    // Générer un nouveau JWT
+    const newToken = jwt.sign(
+      { id: row.uid, username: row.username, role: row.role },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+ 
+    // Rotation du refresh token (sécurité)
+    const newRefreshToken = crypto.randomBytes(48).toString('hex');
+    const newExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 jours
+ 
+    await pool.query('UPDATE refresh_tokens SET revoked = true WHERE token = $1', [refresh_token]);
+    await pool.query(
+      'INSERT INTO refresh_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)',
+      [row.uid, newRefreshToken, newExpiry]
+    );
+ 
+    res.json({ token: newToken, refresh_token: newRefreshToken });
+  } catch (err) {
+    console.error('POST /auth/refresh:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+ 
+// ── POST /auth/logout ──
+// Révoquer le refresh token
+router.post('/logout', async (req, res) => {
+  const { refresh_token } = req.body;
+  if (refresh_token) {
+    await pool.query('UPDATE refresh_tokens SET revoked = true WHERE token = $1', [refresh_token]).catch(() => {});
+  }
+  res.json({ message: 'Déconnecté' });
+});
+
 module.exports = router;
