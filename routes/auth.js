@@ -4,89 +4,48 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const pool = require("../db");
 const sendEmail = require("../utils/mailer");
+const crypto = require('crypto');
 
 // ==========================
-//   Inscription (Admin ou public)
+//   Inscription
 // ==========================
 router.post("/register", async (req, res) => {
   const {
-    username,
-    password,
-    company_name,
-    phone,
-    role = "user",
-    status = "Actif",
-    plan = "Free",
-    payment_status = "À jour",
-    payment_method,
-    expiration,
-    amount = 0.0,
-    upgrade_status = "validé" // ✅ par défaut validé (Free = pas besoin de validation)
+    username, password, company_name, phone,
+    role = "user", status = "Actif", plan = "Free",
+    payment_status = "À jour", payment_method,
+    expiration, amount = 0.0, upgrade_status = "validé"
   } = req.body;
 
   if (!username || !password) {
-    return res.status(400).json({
-      error: "Champs manquants",
-      details: "Le champ 'username' ou 'password' est vide."
-    });
+    return res.status(400).json({ error: "Champs manquants", details: "username ou password vide." });
   }
 
   try {
-    // Vérifie si l'utilisateur existe déjà
-    const existingUser = await pool.query(
-      "SELECT * FROM users WHERE username = $1",
-      [username]
-    );
+    const existingUser = await pool.query("SELECT * FROM users WHERE username = $1", [username]);
     if (existingUser.rows.length > 0) {
-      return res.status(400).json({
-        error: "Utilisateur déjà existant",
-        details: `Le nom d'utilisateur '${username}' est déjà pris.`
-      });
+      return res.status(400).json({ error: "Utilisateur déjà existant", details: `'${username}' est déjà pris.` });
     }
 
-    // Hash du mot de passe
     const hashedPassword = await bcrypt.hash(password, 10);
-
-    // Insertion avec TOUS les champs
     const result = await pool.query(
       `INSERT INTO users 
         (username, password, company_name, phone, role, status, plan, payment_status, payment_method, expiration, amount, upgrade_status) 
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) 
        RETURNING id, username, company_name, phone, role, status, plan, payment_status, payment_method, expiration, amount, upgrade_status`,
-      [
-        username,
-        hashedPassword,
-        company_name || null,
-        phone || null,
-        role,
-        status,
-        plan,
-        payment_status,
-        payment_method || null,
-        expiration || null,
-        amount,
-        upgrade_status
-      ]
+      [username, hashedPassword, company_name||null, phone||null, role, status, plan,
+       payment_status, payment_method||null, expiration||null, amount, upgrade_status]
     );
 
-    res.status(201).json({
-      message: "Compte créé avec succès",
-      user: result.rows[0]
-    });
+    res.status(201).json({ message: "Compte créé avec succès", user: result.rows[0] });
   } catch (err) {
-    console.error("❌ Erreur lors de l'inscription :", err);
-    res.status(500).json({
-      error: "Erreur serveur",
-      details: err.message || err
-    });
+    console.error("❌ Erreur inscription :", err);
+    res.status(500).json({ error: "Erreur serveur", details: err.message });
   }
 });
 
 // ==========================
-//   Connexion
-// ==========================
-// ==========================
-//   Connexion avec 2FA
+//   Connexion (avec 2FA)
 // ==========================
 router.post("/login", async (req, res) => {
   const { username, password } = req.body;
@@ -107,9 +66,8 @@ router.post("/login", async (req, res) => {
 
     const user = result.rows[0];
 
-    // 🚫 Vérifier si le compte est bloqué
     if (user.status === "Bloqué") {
-      return res.status(403).json({ error: "Votre compte est bloqué. Veuillez contacter l’administrateur." });
+      return res.status(403).json({ error: "Votre compte est bloqué. Veuillez contacter l'administrateur." });
     }
 
     const validPassword = await bcrypt.compare(password, user.password);
@@ -117,63 +75,70 @@ router.post("/login", async (req, res) => {
       return res.status(401).json({ error: "Mot de passe incorrect" });
     }
 
-    // Vérifier si 2FA activée
+    // Vérifier 2FA
     const settings = await pool.query(
       "SELECT twofa_enabled FROM admin_settings WHERE admin_id = $1 LIMIT 1",
       [user.id]
     );
-
     const twofaEnabled = settings.rows[0]?.twofa_enabled || false;
 
     if (twofaEnabled && user.role === "admin") {
-      // Générer un code 6 chiffres
-      const code = Math.floor(100000 + Math.random() * 900000).toString();
-      const expires = new Date(Date.now() + 5 * 60 * 1000); // expire dans 5 min
+      const code    = Math.floor(100000 + Math.random() * 900000).toString();
+      const expires = new Date(Date.now() + 5 * 60 * 1000);
 
       await pool.query(
         `INSERT INTO twofa_codes (user_id, code, expires_at) VALUES ($1, $2, $3)`,
         [user.id, code, expires]
       );
-
       await sendEmail(
-  user.username, // email de l’utilisateur
-  "Votre code de connexion (2FA) - Ma Boutique",
-  `Bonjour,\n\nVoici votre code de connexion : ${code}\n\nIl est valable 5 minutes.\n\nÀ bientôt !`
-);
+        user.username,
+        "Votre code de connexion (2FA) - Sama Commerce",
+        `Bonjour,\n\nVoici votre code : ${code}\n\nValable 5 minutes.`
+      );
 
-      return res.json({
-        twofa_required: true,
-        userId: user.id,
-        message: "Code 2FA envoyé par email"
-      });
+      return res.json({ twofa_required: true, userId: user.id, message: "Code 2FA envoyé" });
     }
 
-    // Sinon → connexion normale
+    // ── Génération JWT ──
     const token = jwt.sign(
       { id: user.id, username: user.username, role: user.role },
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );
 
+    // ── Génération Refresh Token ──
+    let refreshToken = null;
+    try {
+      refreshToken = crypto.randomBytes(48).toString('hex');
+      const refreshExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 jours
+      await pool.query(
+        'INSERT INTO refresh_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)',
+        [user.id, refreshToken, refreshExpiry]
+      );
+    } catch (rtErr) {
+      // Si la table n'existe pas encore, on continue sans refresh token
+      console.warn('⚠️ refresh_tokens non disponible:', rtErr.message);
+      refreshToken = null;
+    }
+
     res.json({
       token,
       refresh_token: refreshToken,
       user: {
-        id: user.id,
-        email: user.username,
-        role: user.role,
-        company_name: user.company_name,
-        phone: user.phone,
-        plan: user.plan,
+        id:             user.id,
+        email:          user.username,
+        role:           user.role,
+        company_name:   user.company_name,
+        phone:          user.phone,
+        plan:           user.plan,
         upgrade_status: user.upgrade_status
       }
     });
   } catch (err) {
-    console.error("❌ Erreur lors de la connexion :", err);
+    console.error("❌ Erreur connexion :", err);
     res.status(500).json({ error: err.message });
   }
 });
-
 
 // ==========================
 //   Middleware Auth
@@ -206,291 +171,101 @@ function isAdmin(req, res, next) {
 router.get("/users", authenticateToken, async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT 
-        id, 
-        username, 
-        company_name, 
-        phone, 
-        role, 
-        status, 
-        plan, 
-        payment_status, 
-        payment_method, 
-        expiration, 
-        amount,
-        upgrade_status
+      SELECT id, username, company_name, phone, role, status, plan,
+             payment_status, payment_method, expiration, amount, upgrade_status
       FROM users
     `);
     res.json(result.rows);
   } catch (err) {
-    console.error("❌ Erreur lors de la récupération des utilisateurs :", err);
+    console.error("❌ Erreur /users :", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ==========================
-//   Gestion des utilisateurs (Admin)
-// ==========================
-
-// Bloquer un utilisateur
+// Bloquer
 router.put("/users/:id/block", authenticateToken, isAdmin, async (req, res) => {
   try {
-    const result = await pool.query(
-      "UPDATE users SET status = 'Bloqué' WHERE id = $1 RETURNING *",
-      [req.params.id]
-    );
-    if (result.rows.length === 0) return res.status(404).json({ error: "Utilisateur introuvable" });
+    const result = await pool.query("UPDATE users SET status = 'Bloqué' WHERE id = $1 RETURNING *", [req.params.id]);
+    if (!result.rows.length) return res.status(404).json({ error: "Utilisateur introuvable" });
     res.json(result.rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Réactiver un utilisateur
+// Réactiver
 router.put("/users/:id/activate", authenticateToken, isAdmin, async (req, res) => {
   try {
-    const result = await pool.query(
-      "UPDATE users SET status = 'Actif', payment_status = 'À jour' WHERE id = $1 RETURNING *",
-      [req.params.id]
-    );
-    if (result.rows.length === 0) return res.status(404).json({ error: "Utilisateur introuvable" });
+    const result = await pool.query("UPDATE users SET status = 'Actif', payment_status = 'À jour' WHERE id = $1 RETURNING *", [req.params.id]);
+    if (!result.rows.length) return res.status(404).json({ error: "Utilisateur introuvable" });
     res.json(result.rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Supprimer un utilisateur
+// Supprimer
 router.delete("/users/:id", authenticateToken, isAdmin, async (req, res) => {
   try {
-    const result = await pool.query(
-      "DELETE FROM users WHERE id = $1 RETURNING *",
-      [req.params.id]
-    );
-    if (result.rows.length === 0) return res.status(404).json({ error: "Utilisateur introuvable" });
+    const result = await pool.query("DELETE FROM users WHERE id = $1 RETURNING *", [req.params.id]);
+    if (!result.rows.length) return res.status(404).json({ error: "Utilisateur introuvable" });
     res.json({ message: "Utilisateur supprimé", user: result.rows[0] });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Envoyer un rappel
+// Rappel
 router.post("/users/:id/reminder", authenticateToken, isAdmin, async (req, res) => {
   try {
     const user = await pool.query("SELECT username FROM users WHERE id = $1", [req.params.id]);
-    if (user.rows.length === 0) return res.status(404).json({ error: "Utilisateur introuvable" });
-
-    console.log(`📩 Rappel envoyé à ${user.rows[0].username}`);
+    if (!user.rows.length) return res.status(404).json({ error: "Utilisateur introuvable" });
+    console.log(`📩 Rappel → ${user.rows[0].username}`);
     res.json({ message: `Rappel envoyé à ${user.rows[0].username}` });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ==========================
-//   Infos utilisateur connecté
+//   /auth/me
 // ==========================
 router.get("/me", authenticateToken, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT id, username, company_name, phone, role, status, plan, 
-              payment_status, payment_method, expiration, amount, upgrade_status 
+      `SELECT id, username, company_name, phone, role, status, plan,
+              payment_status, payment_method, expiration, amount, upgrade_status
        FROM users WHERE id = $1`,
       [req.user.id]
     );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Utilisateur introuvable" });
-    }
-
+    if (!result.rows.length) return res.status(404).json({ error: "Utilisateur introuvable" });
     res.json(result.rows[0]);
   } catch (err) {
-    console.error("❌ Erreur lors de /auth/me :", err);
+    console.error("❌ /auth/me :", err);
     res.status(500).json({ error: err.message });
   }
 });
 
 // ==========================
-//   Upgrade vers Premium
+//   PATCH /auth/me — Modifier profil
 // ==========================
-router.put("/upgrade", authenticateToken, async (req, res) => {
-  const { phone, payment_method, amount, expiration } = req.body;
-
-  if (!phone || !payment_method || !amount || !expiration) {
-    return res.status(400).json({ error: "Champs manquants" });
-  }
-
-  try {
-    const result = await pool.query(
-      `UPDATE users
-       SET phone = $1,
-           plan = 'Premium',
-           payment_method = $2,
-           amount = $3,
-           expiration = $4,
-           upgrade_status = 'en attente',
-           payment_status = 'À jour'
-       WHERE id = $5
-       RETURNING id, username, company_name, phone, plan, payment_method, amount, expiration, payment_status, upgrade_status`,
-      [phone, payment_method, amount, expiration, req.user.id]
-    );
-
-    if (result.rows.length === 0) return res.status(404).json({ error: "Utilisateur introuvable" });
-
-    res.json({ message: "Demande d’upgrade enregistrée", user: result.rows[0] });
-  } catch (err) {
-    console.error("❌ Erreur upgrade:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ==========================
-// Approuver upgrade utilisateur
-// ==========================
-router.put('/upgrade/:userId/approve', authenticateToken, isAdmin, async (req, res) => {
-  const { userId } = req.params;
-
-  try {
-    const result = await pool.query(
-      `UPDATE users
-       SET plan = 'Premium', upgrade_status = 'validé'
-       WHERE id = $1
-       RETURNING id, username, plan, upgrade_status`,
-      [userId]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Utilisateur introuvable" });
-    }
-
-    res.json({ message: "Upgrade validé avec succès", user: result.rows[0] });
-  } catch (err) {
-    console.error("❌ Erreur approveUpgrade:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ==========================
-// Rejeter upgrade utilisateur
-// ==========================
-router.put('/upgrade/:userId/reject', authenticateToken, isAdmin, async (req, res) => {
-  const { userId } = req.params;
-
-  try {
-    const result = await pool.query(
-      `UPDATE users
-       SET upgrade_status = 'rejeté', plan = 'Free'
-       WHERE id = $1
-       RETURNING id, username, plan, upgrade_status`,
-      [userId]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Utilisateur introuvable" });
-    }
-
-    res.json({ message: "Upgrade rejeté avec succès", user: result.rows[0] });
-  } catch (err) {
-    console.error("❌ Erreur rejectUpgrade:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ==========================
-//   Vérifier le code 2FA
-// ==========================
-router.post("/verify-2fa", async (req, res) => {
-  const { userId, code } = req.body;
-
-  if (!userId || !code) {
-    return res.status(400).json({ error: "Champs manquants" });
-  }
-
-  try {
-    const q = await pool.query(
-      `SELECT * FROM twofa_codes 
-       WHERE user_id = $1 AND code = $2 AND used = false 
-         AND expires_at > NOW() 
-       ORDER BY created_at DESC LIMIT 1`,
-      [userId, code]
-    );
-
-    if (q.rows.length === 0) {
-      return res.status(400).json({ error: "Code invalide ou expiré" });
-    }
-
-    // Marquer comme utilisé
-    await pool.query(`UPDATE twofa_codes SET used = true WHERE id = $1`, [q.rows[0].id]);
-
-    // Récupérer l'utilisateur
-    const u = await pool.query(
-      "SELECT id, username, role, company_name, phone, plan, upgrade_status FROM users WHERE id = $1",
-      [userId]
-    );
-    const user = u.rows[0];
-
-    const token = jwt.sign(
-      { id: user.id, username: user.username, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: "1h" }
-    );
-
-    res.json({
-      token,
-      user
-    });
-  } catch (err) {
-    console.error("❌ Erreur verify-2fa:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-// ═══════════════════════════════════════════════════════════
-// PATCH routes/auth.js
-// Ajouter ces 2 routes juste avant module.exports = router;
-// ═══════════════════════════════════════════════════════════
-
-// ── PATCH /auth/me — Mettre à jour le profil ──
 router.patch("/me", authenticateToken, async (req, res) => {
   try {
     const { company_name, phone, current_password, new_password } = req.body;
     const userId = req.user.id;
 
-    // Récupérer l'utilisateur courant
-    const { rows } = await pool.query(
-      "SELECT * FROM users WHERE id = $1",
-      [userId]
-    );
+    const { rows } = await pool.query("SELECT * FROM users WHERE id = $1", [userId]);
     if (!rows.length) return res.status(404).json({ error: "Utilisateur introuvable" });
     const user = rows[0];
 
-    // Si changement de mot de passe demandé
     if (new_password) {
-      if (!current_password) {
-        return res.status(400).json({ error: "Mot de passe actuel requis" });
-      }
+      if (!current_password) return res.status(400).json({ error: "Mot de passe actuel requis" });
       const valid = await bcrypt.compare(current_password, user.password);
-      if (!valid) {
-        return res.status(401).json({ error: "Mot de passe actuel incorrect" });
-      }
-      if (new_password.length < 6) {
-        return res.status(400).json({ error: "Le nouveau mot de passe doit faire au moins 6 caractères" });
-      }
+      if (!valid)              return res.status(401).json({ error: "Mot de passe actuel incorrect" });
+      if (new_password.length < 6) return res.status(400).json({ error: "Minimum 6 caractères" });
     }
 
-    // Construire la mise à jour dynamiquement
     const fields = [], values = [];
     let i = 1;
-
     if (company_name !== undefined) { fields.push(`company_name = $${i++}`); values.push(company_name); }
     if (phone !== undefined)        { fields.push(`phone = $${i++}`);        values.push(phone); }
     if (new_password) {
       const hashed = await bcrypt.hash(new_password, 10);
       fields.push(`password = $${i++}`); values.push(hashed);
     }
-
-    if (!fields.length) {
-      return res.status(400).json({ error: "Aucun champ à mettre à jour" });
-    }
+    if (!fields.length) return res.status(400).json({ error: "Aucun champ à mettre à jour" });
 
     values.push(userId);
     const result = await pool.query(
@@ -498,7 +273,6 @@ router.patch("/me", authenticateToken, async (req, res) => {
        RETURNING id, username, company_name, phone, role, plan, expiration, upgrade_status`,
       values
     );
-
     res.json({ message: "Profil mis à jour", user: result.rows[0] });
   } catch (err) {
     console.error("❌ PATCH /auth/me:", err);
@@ -506,22 +280,22 @@ router.patch("/me", authenticateToken, async (req, res) => {
   }
 });
 
-// ── GET /auth/me/stats — Stats du compte (nb produits, ventes, crédits) ──
+// ==========================
+//   GET /auth/me/stats
+// ==========================
 router.get("/me/stats", authenticateToken, async (req, res) => {
   try {
     const uid = req.user.id;
-
     const [prodQ, venteQ, creditQ] = await Promise.all([
       pool.query("SELECT COUNT(*)::int AS total FROM products WHERE user_id = $1", [uid]),
       pool.query("SELECT COUNT(*)::int AS total, COALESCE(SUM(total),0) AS ca FROM sales WHERE user_id = $1", [uid]),
       pool.query("SELECT COUNT(*)::int AS total FROM sales WHERE user_id = $1 AND payment_method = 'credit' AND paid = false", [uid]),
     ]);
-
     res.json({
-      nb_produits:  prodQ.rows[0].total,
-      nb_ventes:    venteQ.rows[0].total,
-      ca_total:     Number(venteQ.rows[0].ca),
-      credits_ouverts: creditQ.rows[0].total,
+      nb_produits:      prodQ.rows[0].total,
+      nb_ventes:        venteQ.rows[0].total,
+      ca_total:         Number(venteQ.rows[0].ca),
+      credits_ouverts:  creditQ.rows[0].total,
     });
   } catch (err) {
     console.error("❌ GET /auth/me/stats:", err);
@@ -529,66 +303,123 @@ router.get("/me/stats", authenticateToken, async (req, res) => {
   }
 });
 
-const crypto = require('crypto');
- 
-// ── POST /auth/refresh ──
-// Renouveler silencieusement le token JWT
+// ==========================
+//   Upgrade Premium
+// ==========================
+router.put("/upgrade", authenticateToken, async (req, res) => {
+  const { phone, payment_method, amount, expiration } = req.body;
+  if (!phone || !payment_method || !amount || !expiration) {
+    return res.status(400).json({ error: "Champs manquants" });
+  }
+  try {
+    const result = await pool.query(
+      `UPDATE users SET phone=$1, plan='Premium', payment_method=$2, amount=$3,
+       expiration=$4, upgrade_status='en attente', payment_status='À jour'
+       WHERE id=$5
+       RETURNING id, username, company_name, phone, plan, payment_method, amount, expiration, payment_status, upgrade_status`,
+      [phone, payment_method, amount, expiration, req.user.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Utilisateur introuvable" });
+    res.json({ message: "Demande d'upgrade enregistrée", user: result.rows[0] });
+  } catch (err) {
+    console.error("❌ Erreur upgrade:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.put('/upgrade/:userId/approve', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(
+      "UPDATE users SET plan='Premium', upgrade_status='validé' WHERE id=$1 RETURNING id, username, plan, upgrade_status",
+      [req.params.userId]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Utilisateur introuvable" });
+    res.json({ message: "Upgrade validé", user: result.rows[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.put('/upgrade/:userId/reject', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(
+      "UPDATE users SET upgrade_status='rejeté', plan='Free' WHERE id=$1 RETURNING id, username, plan, upgrade_status",
+      [req.params.userId]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Utilisateur introuvable" });
+    res.json({ message: "Upgrade rejeté", user: result.rows[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ==========================
+//   2FA
+// ==========================
+router.post("/verify-2fa", async (req, res) => {
+  const { userId, code } = req.body;
+  if (!userId || !code) return res.status(400).json({ error: "Champs manquants" });
+
+  try {
+    const q = await pool.query(
+      `SELECT * FROM twofa_codes
+       WHERE user_id=$1 AND code=$2 AND used=false AND expires_at > NOW()
+       ORDER BY created_at DESC LIMIT 1`,
+      [userId, code]
+    );
+    if (!q.rows.length) return res.status(400).json({ error: "Code invalide ou expiré" });
+
+    await pool.query("UPDATE twofa_codes SET used=true WHERE id=$1", [q.rows[0].id]);
+
+    const u = await pool.query(
+      "SELECT id, username, role, company_name, phone, plan, upgrade_status FROM users WHERE id=$1",
+      [userId]
+    );
+    const user = u.rows[0];
+    const token = jwt.sign({ id:user.id, username:user.username, role:user.role }, process.env.JWT_SECRET, { expiresIn:"7d" });
+    res.json({ token, user });
+  } catch (err) {
+    console.error("❌ Erreur verify-2fa:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================
+//   Refresh Token
+// ==========================
 router.post('/refresh', async (req, res) => {
   const { refresh_token } = req.body;
   if (!refresh_token) return res.status(400).json({ error: 'refresh_token manquant' });
- 
+
   try {
-    // Vérifier que le refresh token existe et n'est pas révoqué
     const { rows } = await pool.query(
       `SELECT rt.*, u.id as uid, u.username, u.role, u.status
-       FROM refresh_tokens rt
-       JOIN users u ON rt.user_id = u.id
-       WHERE rt.token = $1
-         AND rt.revoked = false
-         AND rt.expires_at > NOW()`,
+       FROM refresh_tokens rt JOIN users u ON rt.user_id = u.id
+       WHERE rt.token=$1 AND rt.revoked=false AND rt.expires_at > NOW()`,
       [refresh_token]
     );
- 
-    if (!rows.length) {
-      return res.status(401).json({ error: 'Refresh token invalide ou expiré' });
-    }
- 
+    if (!rows.length) return res.status(401).json({ error: 'Refresh token invalide ou expiré' });
+
     const row = rows[0];
- 
-    if (row.status === 'Bloqué') {
-      return res.status(403).json({ error: 'Compte bloqué' });
-    }
- 
-    // Générer un nouveau JWT
-    const newToken = jwt.sign(
-      { id: row.uid, username: row.username, role: row.role },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d' }
-    );
- 
-    // Rotation du refresh token (sécurité)
+    if (row.status === 'Bloqué') return res.status(403).json({ error: 'Compte bloqué' });
+
+    const newToken        = jwt.sign({ id:row.uid, username:row.username, role:row.role }, process.env.JWT_SECRET, { expiresIn:'7d' });
     const newRefreshToken = crypto.randomBytes(48).toString('hex');
-    const newExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 jours
- 
-    await pool.query('UPDATE refresh_tokens SET revoked = true WHERE token = $1', [refresh_token]);
-    await pool.query(
-      'INSERT INTO refresh_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)',
-      [row.uid, newRefreshToken, newExpiry]
-    );
- 
+    const newExpiry       = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+    await pool.query('UPDATE refresh_tokens SET revoked=true WHERE token=$1', [refresh_token]);
+    await pool.query('INSERT INTO refresh_tokens (user_id, token, expires_at) VALUES ($1,$2,$3)', [row.uid, newRefreshToken, newExpiry]);
+
     res.json({ token: newToken, refresh_token: newRefreshToken });
   } catch (err) {
     console.error('POST /auth/refresh:', err);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
- 
-// ── POST /auth/logout ──
-// Révoquer le refresh token
+
+// ==========================
+//   Logout
+// ==========================
 router.post('/logout', async (req, res) => {
   const { refresh_token } = req.body;
   if (refresh_token) {
-    await pool.query('UPDATE refresh_tokens SET revoked = true WHERE token = $1', [refresh_token]).catch(() => {});
+    await pool.query('UPDATE refresh_tokens SET revoked=true WHERE token=$1', [refresh_token]).catch(()=>{});
   }
   res.json({ message: 'Déconnecté' });
 });
