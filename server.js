@@ -8,9 +8,6 @@ const path = require('path');
 const app  = express();
 const port = process.env.PORT || 4000;
 
-// Servir les fichiers statiques
-app.use(express.static(path.join(process.cwd())));
-
 // ── Routes importées ──
 const adminWithdrawalsRoutes = require('./routes/adminWithdrawals');
 const alertsRoutes           = require('./routes/alerts');
@@ -71,6 +68,11 @@ app.use('/clients',      clientsRoutes);
 app.use('/fournisseurs', fournisseursRoutes);
 app.use('/commandes',    commandesRoutes);
 app.use('/livraisons',   livraisonsRoutes);
+
+
+// Servir les fichiers statiques
+app.use(express.static(path.join(process.cwd())));
+
 
 // ══════════════════════════════════════
 // CRON : recalcul alertes à minuit
