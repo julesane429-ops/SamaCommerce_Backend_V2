@@ -51,12 +51,12 @@ router.post('/', verifyToken, async (req, res) => {
     console.log('📩 POST /products reçu :', req.body);
     console.log('👤 Utilisateur connecté :', req.user);
 
-    const { name, category_id, scent, price, stock, price_achat } = req.body;
+    const { name, category_id, scent, price, stock, price_achat, image_url } = req.body;
     const userId = req.user.id;
 
     const result = await db.query(
-      `INSERT INTO products (name, category_id, scent, price, stock, price_achat, user_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO products (name, category_id, scent, price, stock, price_achat, user_id, image_url)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
       [
         name,
@@ -65,7 +65,7 @@ router.post('/', verifyToken, async (req, res) => {
         Number.isFinite(+price) ? +price : 0,
         Number.isFinite(+stock) ? +stock : 0,
         Number.isFinite(+price_achat) ? +price_achat : 0,
-        userId
+        userId, image_url || null
       ]
     );
 
@@ -81,7 +81,7 @@ router.patch('/:id', verifyToken, async (req, res) => {
   try {
     console.log('📩 PATCH /products reçu :', req.body);
 
-    const fields = ['name', 'category_id', 'scent', 'price', 'stock', 'price_achat'];
+    const fields = ['name', 'category_id', 'scent', 'price', 'stock', 'price_achat', 'image_url'];
     const set = [];
     const values = [];
     let i = 1;
@@ -141,5 +141,20 @@ router.delete('/:id', verifyToken, async (req, res) => {
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
-
+// DELETE /products/:id/image — Supprimer l'image d'un produit
+router.delete('/:id/image', verifyToken, async (req, res) => {
+  try {
+    const result = await db.query(
+      `UPDATE products SET image_url = NULL
+       WHERE id = $1 AND user_id = $2
+       RETURNING id`,
+      [req.params.id, req.user.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Produit introuvable' });
+    res.json({ message: 'Image supprimée' });
+  } catch (err) {
+    console.error('DELETE /products/:id/image:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
 module.exports = router;
