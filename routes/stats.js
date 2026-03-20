@@ -103,5 +103,30 @@ router.get('/stock-faible', verifyToken, async (req, res) => {
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
+// ═══════════════════════════════════════════════════════════
+// PATCH routes/stats.js
+// Ajouter cette route avant module.exports = router;
+// ═══════════════════════════════════════════════════════════
 
+// ── GET /stats/today ── Ventes + CA du jour en temps réel
+router.get('/today', verifyToken, async (req, res) => {
+  try {
+    const { rows } = await db.query(`
+      SELECT
+        COUNT(*)::int                                    AS nb_ventes,
+        COALESCE(SUM(s.total), 0)::numeric               AS ca_jour,
+        COUNT(*) FILTER (WHERE s.paid = true)::int       AS nb_encaissees,
+        COALESCE(SUM(s.total) FILTER (WHERE s.paid = true), 0)::numeric AS ca_encaisse,
+        COUNT(*) FILTER (WHERE s.payment_method = 'credit' AND s.paid = false)::int AS nb_credits
+      FROM sales s
+      WHERE s.user_id = $1
+        AND DATE(s.created_at) = CURRENT_DATE
+    `, [req.user.id]);
+
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('GET /stats/today:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
 module.exports = router;
