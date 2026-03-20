@@ -6,14 +6,20 @@ const verifyToken = require('../middleware/auth');
 // ✅ GET toutes les ventes
 router.get('/', verifyToken, async (req, res) => {
   try {
+    const page   = Math.max(1, parseInt(req.query.page  || '1'));
+    const limit  = req.query.limit ? Math.min(500, Math.max(1, parseInt(req.query.limit))) : 0;
+    const offset = limit > 0 ? (page - 1) * limit : 0;
+    const limitClause = limit > 0 ? `LIMIT ${limit} OFFSET ${offset}` : '';
+ 
     const result = await db.query(`
       SELECT s.*, p.name AS product_name
       FROM sales s
       JOIN products p ON s.product_id = p.id
       WHERE s.user_id = $1
       ORDER BY s.created_at DESC
+      ${limitClause}
     `, [req.user.id]);
-
+ 
     res.json(result.rows);
   } catch (err) {
     console.error("Erreur GET /sales :", err);
