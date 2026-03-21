@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const verifyToken = require('../middleware/auth');
+const perm        = require('../middleware/checkPermission');
 
 // GET : Liste catégories utilisateur
 router.get('/', verifyToken, async (req, res) => {
@@ -19,7 +20,7 @@ router.get('/', verifyToken, async (req, res) => {
 });
 
 // POST : Créer catégorie
-router.post('/', verifyToken, async (req, res) => {
+router.post('/', verifyToken, perm('categories'), async (req, res) => {
   try {
     const { name, emoji, couleur } = req.body;
 
@@ -43,7 +44,7 @@ router.post('/', verifyToken, async (req, res) => {
 
 
 // DELETE : Supprimer catégorie utilisateur
-router.delete('/:id', verifyToken, async (req, res) => {
+router.delete('/:id', verifyToken, perm('categories'), async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ error: 'ID invalide' });
