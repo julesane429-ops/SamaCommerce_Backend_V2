@@ -77,17 +77,24 @@ router.post('/', verifyToken, perm('stock'), async (req, res) => {
     const userId = req.user.id;
 
     const result = await db.query(
-      `INSERT INTO products (name, category_id, scent, price, stock, price_achat, user_id, image_url)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO products
+         (name, category_id, scent, price, stock, price_achat, user_id, image_url,
+          is_mixed_sale, lot_size, price_gros, price_detail)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
        RETURNING *`,
       [
         name,
-        category_id,
-        scent,
-        Number.isFinite(+price) ? +price : 0,
-        Number.isFinite(+stock) ? +stock : 0,
+        parseInt(category_id)                                 || null,
+        scent                                                 || null,
+        Number.isFinite(+price)       ? +price       : 0,
+        Number.isFinite(+stock)       ? +stock       : 0,
         Number.isFinite(+price_achat) ? +price_achat : 0,
-        userId, image_url || null
+        userId,
+        image_url                                             || null,
+        is_mixed_sale === true || is_mixed_sale === 'true',
+        parseInt(lot_size)                                    || 1,
+        price_gros   != null && price_gros   !== '' ? parseFloat(price_gros)   : null,
+        price_detail != null && price_detail !== '' ? parseFloat(price_detail) : null,
       ]
     );
 
@@ -115,11 +122,18 @@ router.patch('/:id', verifyToken, perm('stock'), async (req, res) => {
 
     for (const f of fields) {
       if (req.body.hasOwnProperty(f)) {
+        let val = req.body[f];
+        // Caster chaque champ au bon type PostgreSQL
         if (['price', 'stock', 'price_achat', 'category_id'].includes(f)) {
-          values.push(Number.isFinite(+req.body[f]) ? +req.body[f] : 0);
-        } else {
-          values.push(req.body[f]);
+          val = Number.isFinite(+val) ? +val : 0;
+        } else if (f === 'is_mixed_sale') {
+          val = val === true || val === 'true';          // boolean
+        } else if (f === 'lot_size') {
+          val = parseInt(val) || 1;                      // integer
+        } else if (f === 'price_gros' || f === 'price_detail') {
+          val = val !== null && val !== '' ? parseFloat(val) : null;  // numeric nullable
         }
+        values.push(val);
         set.push(`${f} = $${i++}`);
       }
     }
