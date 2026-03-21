@@ -6,7 +6,6 @@ const perm        = require('../middleware/checkPermission');
 
 // GET : Liste catégories utilisateur
 router.get('/', verifyToken, async (req, res) => {
-  console.log("👤 Utilisateur authentifié:", req.user);
   try {
     const result = await db.query(
       'SELECT id, name, user_id, emoji, couleur FROM categories WHERE user_id = $1 ORDER BY id',
