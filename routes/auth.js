@@ -5,6 +5,7 @@ const jwt = require("jsonwebtoken");
 const pool = require("../db");
 const sendEmail = require("../utils/mailer");
 const crypto = require('crypto');
+const { loginRateLimit, resetLimit } = require('../middleware/rateLimit');
 
 // ==========================
 //   Inscription
@@ -47,7 +48,7 @@ router.post("/register", async (req, res) => {
 // ==========================
 //   Connexion (avec 2FA)
 // ==========================
-router.post("/login", async (req, res) => {
+router.post("/login", loginRateLimit, async (req, res) => {
   const { username, password } = req.body;
 
   if (!username || !password) {
@@ -105,6 +106,9 @@ router.post("/login", async (req, res) => {
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );
+
+    // Réinitialiser le compteur de tentatives après succès
+    resetLimit(req.ip || req.connection?.remoteAddress || 'unknown');
 
     // ── Génération Refresh Token ──
     let refreshToken = null;
