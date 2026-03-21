@@ -115,27 +115,30 @@ router.patch('/:id', verifyToken, perm('stock'), async (req, res) => {
       if (!imgCheck.valid) return res.status(400).json({ error: imgCheck.error });
     }
 
-    const fields = ['name', 'category_id', 'scent', 'price', 'stock', 'price_achat', 'image_url', 'is_mixed_sale', 'lot_size', 'price_gros', 'price_detail'];
+    // Champs de base (toujours présents en base)
+    const fields = ['name', 'category_id', 'scent', 'price', 'stock', 'price_achat', 'image_url', 'description'];
+    // Champs vente mixte (uniquement si la migration SQL a été exécutée)
+    // Ils sont ajoutés seulement si explicitement envoyés dans le body
+    const mixedFields = ['is_mixed_sale', 'lot_size', 'price_gros', 'price_detail'];
     const set = [];
     const values = [];
     let i = 1;
 
-    for (const f of fields) {
-      if (req.body.hasOwnProperty(f)) {
-        let val = req.body[f];
-        // Caster chaque champ au bon type PostgreSQL
-        if (['price', 'stock', 'price_achat', 'category_id'].includes(f)) {
-          val = Number.isFinite(+val) ? +val : 0;
-        } else if (f === 'is_mixed_sale') {
-          val = val === true || val === 'true';          // boolean
-        } else if (f === 'lot_size') {
-          val = parseInt(val) || 1;                      // integer
-        } else if (f === 'price_gros' || f === 'price_detail') {
-          val = val !== null && val !== '' ? parseFloat(val) : null;  // numeric nullable
-        }
-        values.push(val);
-        set.push(`${f} = $${i++}`);
+    for (const f of [...fields, ...mixedFields]) {
+      if (!req.body.hasOwnProperty(f)) continue;
+      let val = req.body[f];
+      // Caster chaque champ au bon type PostgreSQL
+      if (['price', 'stock', 'price_achat', 'category_id'].includes(f)) {
+        val = Number.isFinite(+val) ? +val : 0;
+      } else if (f === 'is_mixed_sale') {
+        val = val === true || val === 'true';
+      } else if (f === 'lot_size') {
+        val = parseInt(val) || 1;
+      } else if (f === 'price_gros' || f === 'price_detail') {
+        val = val !== null && val !== undefined && val !== '' ? parseFloat(val) : null;
       }
+      values.push(val);
+      set.push(`${f} = $${i++}`);
     }
 
     if (set.length === 0) {
@@ -159,7 +162,36 @@ router.patch('/:id', verifyToken, perm('stock'), async (req, res) => {
 
     res.json(result.rows[0]);
   } catch (err) {
-    console.error('Erreur PATCH /products/:id:', err);
+    // Si les colonnes vente mixte n'existent pas encore (migration pas encore exécutée)
+    // on réessaie sans ces colonnes
+    if (err.message && err.message.includes('column') && err.message.includes('does not exist')) {
+      try {
+        const safeFields = ['name', 'category_id', 'scent', 'price', 'stock',
+                            'price_achat', 'image_url', 'description'];
+        const safeSet = []; const safeVals = []; let j = 1;
+        for (const f of safeFields) {
+          if (!req.body.hasOwnProperty(f)) continue;
+          let val = req.body[f];
+          if (['price','stock','price_achat','category_id'].includes(f))
+            val = Number.isFinite(+val) ? +val : 0;
+          safeVals.push(val);
+          safeSet.push(`${f} = $${j++}`);
+        }
+        if (safeSet.length === 0) return res.status(400).json({ error: 'Rien à mettre à jour.' });
+        safeVals.push(req.params.id);
+        safeVals.push(req.user.id);
+        const r2 = await db.query(
+          `UPDATE products SET ${safeSet.join(', ')} WHERE id = $${j++} AND user_id = $${j} RETURNING *`,
+          safeVals
+        );
+        if (!r2.rows.length) return res.status(404).json({ error: 'Produit introuvable.' });
+        return res.json(r2.rows[0]);
+      } catch (err2) {
+        console.error('PATCH /products fallback error:', err2.message);
+        return res.status(500).json({ error: 'Erreur serveur' });
+      }
+    }
+    console.error('Erreur PATCH /products/:id:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
