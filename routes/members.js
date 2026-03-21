@@ -4,6 +4,9 @@ const router     = express.Router();
 const db         = require('../db');
 const verifyToken = require('../middleware/auth');
 const crypto     = require('crypto');
+const employeeProxy = require('../middleware/employeeProxy');
+
+const INVITE_TTL_HOURS = 72;
 
 // Permissions disponibles
 const ALL_PERMS = ['vente', 'stock', 'rapports', 'credits', 'clients',
@@ -60,13 +63,14 @@ router.post('/invite', verifyToken, async (req, res) => {
 
     const finalPerms = permissions || defaultPerms;
     const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + INVITE_TTL_HOURS * 3600 * 1000);
 
     const { rows } = await db.query(`
       INSERT INTO boutique_members
-        (boutique_id, email, role, status, permissions, invite_token)
-      VALUES ($1, $2, $3, 'pending', $4, $5)
+        (boutique_id, email, role, status, permissions, invite_token, invite_expires_at)
+      VALUES ($1, $2, $3, 'pending', $4, $5, $6)
       RETURNING *
-    `, [req.user.id, email, role, finalPerms, token]);
+    `, [req.user.id, email, role, finalPerms, token, expiresAt]);
 
     // TODO: envoyer un email d'invitation (optionnel)
     // await sendEmail(email, 'Invitation boutique', `Rejoignez la boutique sur Sama Commerce : ${token}`);
@@ -95,6 +99,15 @@ router.post('/accept', verifyToken, async (req, res) => {
     if (!rows.length) return res.status(404).json({ error: 'Invitation invalide ou expirée' });
 
     const invite = rows[0];
+
+    // Vérifier l'expiration
+    if (invite.invite_expires_at && new Date(invite.invite_expires_at) < new Date()) {
+      await db.query(
+        "UPDATE boutique_members SET status='rejected' WHERE id=$1",
+        [invite.id]
+      );
+      return res.status(410).json({ error: 'Cette invitation a expiré. Demandez une nouvelle invitation.' });
+    }
 
     // Mettre à jour le membre
     await db.query(`
@@ -136,6 +149,10 @@ router.patch('/:id', verifyToken, async (req, res) => {
         req.params.id, req.user.id]);
 
     if (!rows.length) return res.status(404).json({ error: 'Membre introuvable' });
+
+    // Invalider le cache du proxy pour que les nouvelles permissions soient actives immédiatement
+    if (rows[0].member_id) employeeProxy.invalidate(rows[0].member_id);
+
     res.json(rows[0]);
   } catch (err) {
     console.error('PATCH /members/:id:', err);
@@ -151,6 +168,13 @@ router.delete('/:id', verifyToken, async (req, res) => {
       [req.params.id, req.user.id]
     );
     if (!rowCount) return res.status(404).json({ error: 'Membre introuvable' });
+
+    // Invalider le cache proxy
+    const { rows: deleted } = await db.query(
+      'SELECT member_id FROM boutique_members WHERE id=$1', [req.params.id]
+    ).catch(() => ({ rows: [] }));
+    if (deleted[0]?.member_id) employeeProxy.invalidate(deleted[0].member_id);
+
     res.json({ message: 'Membre retiré' });
   } catch (err) {
     console.error('DELETE /members/:id:', err);
