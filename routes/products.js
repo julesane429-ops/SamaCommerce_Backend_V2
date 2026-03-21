@@ -5,19 +5,31 @@ const db = require('../db');
 const verifyToken = require('../middleware/auth');
 const perm        = require('../middleware/checkPermission');
 
-// ── GET /products ─────────────────────────────────────────────────────────
+// ── Valider et limiter la taille des images base64 ──
+function validateImageUrl(imageUrl) {
+  if (!imageUrl) return { valid: true };  // null OK (suppression)
+  if (typeof imageUrl !== 'string') return { valid: false, error: 'Format image invalide' };
+  // Vérifier que c'est bien une image base64
+  if (!imageUrl.startsWith('data:image/')) {
+    return { valid: false, error: 'Seules les images sont acceptées (data:image/...)' };
+  }
+  // Limiter à ~200Ko en base64 (≈150Ko image réelle)
+  const MAX_B64_SIZE = 200 * 1024; // 200 Ko
+  if (imageUrl.length > MAX_B64_SIZE) {
+    return { valid: false, error: `Image trop grande. Maximum 150 Ko (actuel: ${Math.round(imageUrl.length/1024)} Ko)` };
+  }
+  return { valid: true };
+}
+
+// GET /products : Liste uniquement les produits de l'utilisateur connecté
 router.get('/', verifyToken, async (req, res) => {
   try {
+    const userId = req.user.id;
     const result = await db.query(
-      `SELECT id, name, category_id, scent, description, price, price_achat,
-              stock, stock_reserved, image_url,
-              price_gros, quantite_gros,
-              deleted_at, updated_at, user_id
-       FROM products
-       WHERE user_id = $1 AND deleted_at IS NULL
-       ORDER BY id DESC`,
-      [req.user.id]
+      'SELECT * FROM products WHERE user_id = $1 ORDER BY id DESC',
+      [userId]
     );
+
     res.json(result.rows);
   } catch (err) {
     console.error('Erreur GET /products:', err);
@@ -25,21 +37,21 @@ router.get('/', verifyToken, async (req, res) => {
   }
 });
 
-// ── GET /products/:id ─────────────────────────────────────────────────────
+// ✅ GET /products/:id : Récupère un produit spécifique (sécurisé par user_id)
 router.get('/:id', verifyToken, async (req, res) => {
   try {
+    const userId = req.user.id;
+    const productId = req.params.id;
+
     const result = await db.query(
-      `SELECT id, name, category_id, scent, description, price, price_achat,
-              stock, stock_reserved, image_url,
-              price_gros, quantite_gros,
-              deleted_at, updated_at, user_id
-       FROM products
-       WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
-      [req.params.id, req.user.id]
+      'SELECT * FROM products WHERE id = $1 AND user_id = $2',
+      [productId, userId]
     );
+
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Produit introuvable ou non autorisé.' });
     }
+
     res.json(result.rows[0]);
   } catch (err) {
     console.error('Erreur GET /products/:id:', err);
@@ -47,44 +59,38 @@ router.get('/:id', verifyToken, async (req, res) => {
   }
 });
 
-// ── POST /products ────────────────────────────────────────────────────────
+
+// POST /products : Ajoute un produit lié à l'utilisateur connecté
 router.post('/', verifyToken, perm('stock'), async (req, res) => {
   try {
+
     const {
-      name, category_id, scent, description,
-      price, stock, price_achat, image_url,
-      price_gros, quantite_gros
+      name, category_id, scent, price, stock, price_achat, image_url,
+      is_mixed_sale, lot_size, price_gros, price_detail
     } = req.body;
+
+    // Valider l'image si fournie
+    if (image_url) {
+      const imgCheck = validateImageUrl(image_url);
+      if (!imgCheck.valid) return res.status(400).json({ error: imgCheck.error });
+    }
     const userId = req.user.id;
 
-    // Valider la cohérence gros : les deux ensemble ou aucun
-    const hasGros = price_gros != null || quantite_gros != null;
-    if (hasGros && (price_gros == null || quantite_gros == null)) {
-      return res.status(400).json({
-        error: 'price_gros et quantite_gros doivent être renseignés ensemble.'
-      });
-    }
-
     const result = await db.query(
-      `INSERT INTO products
-        (name, category_id, scent, description, price, stock, price_achat,
-         user_id, image_url, price_gros, quantite_gros)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+      `INSERT INTO products (name, category_id, scent, price, stock, price_achat, user_id, image_url)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
       [
         name,
-        category_id   || null,
-        scent         || null,
-        description   || null,
-        Number.isFinite(+price)       ? +price       : 0,
-        Number.isFinite(+stock)       ? +stock       : 0,
+        category_id,
+        scent,
+        Number.isFinite(+price) ? +price : 0,
+        Number.isFinite(+stock) ? +stock : 0,
         Number.isFinite(+price_achat) ? +price_achat : 0,
-        userId,
-        image_url     || null,
-        price_gros    != null ? +price_gros    : null,
-        quantite_gros != null ? +quantite_gros : null
+        userId, image_url || null
       ]
     );
+
     res.status(201).json(result.rows[0]);
   } catch (err) {
     console.error('Erreur POST /products:', err);
@@ -92,63 +98,43 @@ router.post('/', verifyToken, perm('stock'), async (req, res) => {
   }
 });
 
-// ── PATCH /products/:id ───────────────────────────────────────────────────
+// PATCH /products/:id : Met à jour uniquement les produits appartenant à l'utilisateur
 router.patch('/:id', verifyToken, perm('stock'), async (req, res) => {
   try {
-    const updatableFields = [
-      'name', 'category_id', 'scent', 'description',
-      'price', 'stock', 'price_achat', 'image_url',
-      'price_gros', 'quantite_gros'
-    ];
-    const numericFields = ['price', 'stock', 'price_achat', 'category_id', 'price_gros', 'quantite_gros'];
 
-    const set    = [];
+    // Valider l'image si fournie dans le PATCH
+    if (req.body.image_url !== undefined && req.body.image_url !== null) {
+      const imgCheck = validateImageUrl(req.body.image_url);
+      if (!imgCheck.valid) return res.status(400).json({ error: imgCheck.error });
+    }
+
+    const fields = ['name', 'category_id', 'scent', 'price', 'stock', 'price_achat', 'image_url', 'is_mixed_sale', 'lot_size', 'price_gros', 'price_detail'];
+    const set = [];
     const values = [];
     let i = 1;
 
-    for (const f of updatableFields) {
-      if (!Object.prototype.hasOwnProperty.call(req.body, f)) continue;
-      const val = req.body[f];
-      // Permettre NULL explicite pour price_gros et quantite_gros
-      if (val === null && ['price_gros', 'quantite_gros'].includes(f)) {
-        values.push(null);
-      } else if (numericFields.includes(f)) {
-        values.push(Number.isFinite(+val) ? +val : 0);
-      } else {
-        values.push(val);
+    for (const f of fields) {
+      if (req.body.hasOwnProperty(f)) {
+        if (['price', 'stock', 'price_achat', 'category_id'].includes(f)) {
+          values.push(Number.isFinite(+req.body[f]) ? +req.body[f] : 0);
+        } else {
+          values.push(req.body[f]);
+        }
+        set.push(`${f} = $${i++}`);
       }
-      set.push(`${f} = $${i++}`);
     }
 
     if (set.length === 0) {
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
     }
 
-    // Vérifier cohérence gros après merge avec valeurs existantes
-    // On récupère le produit actuel pour tester la cohérence finale
-    const current = await db.query(
-      'SELECT price_gros, quantite_gros FROM products WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL',
-      [req.params.id, req.user.id]
-    );
-    if (!current.rows.length) {
-      return res.status(404).json({ error: 'Produit introuvable ou non autorisé.' });
-    }
-    const cur = current.rows[0];
-    const finalPriceGros    = req.body.hasOwnProperty('price_gros')    ? req.body.price_gros    : cur.price_gros;
-    const finalQuantiteGros = req.body.hasOwnProperty('quantite_gros') ? req.body.quantite_gros : cur.quantite_gros;
-    const hasGros = finalPriceGros != null || finalQuantiteGros != null;
-    if (hasGros && (finalPriceGros == null || finalQuantiteGros == null)) {
-      return res.status(400).json({
-        error: 'price_gros et quantite_gros doivent être renseignés ensemble ou tous les deux à null.'
-      });
-    }
-
+    // Ajout du filtre par user_id pour sécuriser la modification
     values.push(req.params.id);
     values.push(req.user.id);
 
     const result = await db.query(
       `UPDATE products SET ${set.join(', ')}
-       WHERE id = $${i++} AND user_id = $${i} AND deleted_at IS NULL
+       WHERE id = $${i++} AND user_id = $${i}
        RETURNING *`,
       values
     );
@@ -156,6 +142,7 @@ router.patch('/:id', verifyToken, perm('stock'), async (req, res) => {
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Produit introuvable ou non autorisé.' });
     }
+
     res.json(result.rows[0]);
   } catch (err) {
     console.error('Erreur PATCH /products/:id:', err);
@@ -163,31 +150,30 @@ router.patch('/:id', verifyToken, perm('stock'), async (req, res) => {
   }
 });
 
-// ── DELETE /products/:id — Soft delete ───────────────────────────────────
+// DELETE /products/:id : Supprime uniquement les produits appartenant à l'utilisateur
 router.delete('/:id', verifyToken, perm('stock'), async (req, res) => {
   try {
     const result = await db.query(
-      `UPDATE products SET deleted_at = NOW()
-       WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
-       RETURNING *`,
+      'DELETE FROM products WHERE id = $1 AND user_id = $2 RETURNING *',
       [req.params.id, req.user.id]
     );
+
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Produit introuvable ou non autorisé.' });
     }
+
     res.json({ message: 'Produit supprimé' });
   } catch (err) {
     console.error('Erreur DELETE /products/:id:', err);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
-
-// ── DELETE /products/:id/image ────────────────────────────────────────────
+// DELETE /products/:id/image — Supprimer l'image d'un produit
 router.delete('/:id/image', verifyToken, async (req, res) => {
   try {
     const result = await db.query(
       `UPDATE products SET image_url = NULL
-       WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
+       WHERE id = $1 AND user_id = $2
        RETURNING id`,
       [req.params.id, req.user.id]
     );
@@ -198,5 +184,4 @@ router.delete('/:id/image', verifyToken, async (req, res) => {
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
-
 module.exports = router;
