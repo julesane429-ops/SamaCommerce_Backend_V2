@@ -1,10 +1,12 @@
-// routes/livraisons.js
+// routes/livraisons.js — Livraisons de réapprovisionnement fournisseurs
+// Table renommée : livraisons → restock_deliveries
+//                  commandes  → restock_orders
 const express = require('express');
 const router  = express.Router();
 const db      = require('../db');
 const verify  = require('../middleware/auth');
 
-// ─── GET /livraisons ─── Liste toutes les livraisons
+// ─── GET /livraisons ─── Liste toutes les livraisons fournisseurs
 router.get('/', verify, async (req, res) => {
   try {
     const { rows } = await db.query(
@@ -13,9 +15,9 @@ router.get('/', verify, async (req, res) => {
               c.total         AS commande_total,
               c.expected_date,
               f.name          AS fournisseur_name
-       FROM livraisons l
-       LEFT JOIN commandes    c ON c.id = l.commande_id
-       LEFT JOIN fournisseurs f ON f.id = c.fournisseur_id
+       FROM restock_deliveries l
+       LEFT JOIN restock_orders c ON c.id = l.commande_id
+       LEFT JOIN fournisseurs   f ON f.id = c.fournisseur_id
        WHERE l.user_id = $1
        ORDER BY l.created_at DESC`,
       [req.user.id]
@@ -38,9 +40,9 @@ router.get('/:id', verify, async (req, res) => {
               c.expected_date,
               f.name          AS fournisseur_name,
               f.phone         AS fournisseur_phone
-       FROM livraisons l
-       LEFT JOIN commandes    c ON c.id = l.commande_id
-       LEFT JOIN fournisseurs f ON f.id = c.fournisseur_id
+       FROM restock_deliveries l
+       LEFT JOIN restock_orders c ON c.id = l.commande_id
+       LEFT JOIN fournisseurs   f ON f.id = c.fournisseur_id
        WHERE l.id = $1 AND l.user_id = $2`,
       [req.params.id, req.user.id]
     );
@@ -62,24 +64,23 @@ router.get('/:id', verify, async (req, res) => {
   }
 });
 
-// ─── POST /livraisons ─── Créer une livraison liée à une commande
+// ─── POST /livraisons ─── Créer une livraison liée à une commande fournisseur
 router.post('/', verify, async (req, res) => {
   try {
     const { commande_id, tracking_note } = req.body;
 
-    // Vérifier que la commande appartient à l'user
     if (commande_id) {
       const { rows: cmd } = await db.query(
-        'SELECT id FROM commandes WHERE id = $1 AND user_id = $2',
+        'SELECT id FROM restock_orders WHERE id = $1 AND user_id = $2',
         [commande_id, req.user.id]
       );
       if (!cmd.length) return res.status(404).json({ error: 'Commande introuvable' });
     }
 
     const { rows } = await db.query(
-      `INSERT INTO livraisons (user_id, commande_id, tracking_note, status)
+      `INSERT INTO restock_deliveries (user_id, commande_id, tracking_note, status)
        VALUES ($1,$2,$3,'en_attente') RETURNING *`,
-      [req.user.id, commande_id || null, tracking_note || null]
+      [req.user.id, commande_id||null, tracking_note||null]
     );
     res.status(201).json(rows[0]);
   } catch (err) {
@@ -88,29 +89,26 @@ router.post('/', verify, async (req, res) => {
   }
 });
 
-// ─── PATCH /livraisons/:id ─── Mettre à jour le statut / note
+// ─── PATCH /livraisons/:id ─── Mettre à jour statut / note
 router.patch('/:id', verify, async (req, res) => {
   try {
     const allowed = ['status', 'tracking_note', 'delivered_at'];
     const set = [], values = [];
     let i = 1;
 
-    // Si on passe à "livree", enregistrer la date automatiquement
+    // Auto-date si livraison confirmée
     if (req.body.status === 'livree' && !req.body.delivered_at) {
       req.body.delivered_at = new Date().toISOString();
     }
 
     for (const f of allowed) {
-      if (req.body.hasOwnProperty(f)) {
-        set.push(`${f} = $${i++}`);
-        values.push(req.body[f]);
-      }
+      if (req.body.hasOwnProperty(f)) { set.push(`${f} = $${i++}`); values.push(req.body[f]); }
     }
     if (!set.length) return res.status(400).json({ error: 'Aucun champ' });
 
     values.push(req.params.id, req.user.id);
     const { rows } = await db.query(
-      `UPDATE livraisons SET ${set.join(', ')}
+      `UPDATE restock_deliveries SET ${set.join(', ')}
        WHERE id = $${i++} AND user_id = $${i} RETURNING *`,
       values
     );
@@ -122,11 +120,11 @@ router.patch('/:id', verify, async (req, res) => {
   }
 });
 
-// ─── DELETE /livraisons/:id ─── Supprimer
+// ─── DELETE /livraisons/:id ───
 router.delete('/:id', verify, async (req, res) => {
   try {
     const { rows } = await db.query(
-      'DELETE FROM livraisons WHERE id = $1 AND user_id = $2 RETURNING *',
+      'DELETE FROM restock_deliveries WHERE id = $1 AND user_id = $2 RETURNING *',
       [req.params.id, req.user.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Livraison introuvable' });
