@@ -7,7 +7,6 @@ const perm        = require('../middleware/checkPermission');
 
 // GET /products : Liste uniquement les produits de l'utilisateur connecté
 router.get('/', verifyToken, async (req, res) => {
-  console.log("👤 Utilisateur authentifié:", req.user);
   try {
     const userId = req.user.id;
     const result = await db.query(
@@ -15,7 +14,6 @@ router.get('/', verifyToken, async (req, res) => {
       [userId]
     );
 
-    console.log('📤 GET /products renvoie :', result.rows);
     res.json(result.rows);
   } catch (err) {
     console.error('Erreur GET /products:', err);
@@ -49,8 +47,6 @@ router.get('/:id', verifyToken, async (req, res) => {
 // POST /products : Ajoute un produit lié à l'utilisateur connecté
 router.post('/', verifyToken, perm('stock'), async (req, res) => {
   try {
-    console.log('📩 POST /products reçu :', req.body);
-    console.log('👤 Utilisateur connecté :', req.user);
 
     const { name, category_id, scent, price, stock, price_achat, image_url } = req.body;
     const userId = req.user.id;
@@ -80,7 +76,6 @@ router.post('/', verifyToken, perm('stock'), async (req, res) => {
 // PATCH /products/:id : Met à jour uniquement les produits appartenant à l'utilisateur
 router.patch('/:id', verifyToken, perm('stock'), async (req, res) => {
   try {
-    console.log('📩 PATCH /products reçu :', req.body);
 
     const fields = ['name', 'category_id', 'scent', 'price', 'stock', 'price_achat', 'image_url'];
     const set = [];
