@@ -5,7 +5,26 @@ const jwt = require("jsonwebtoken");
 const pool = require("../db");
 const sendEmail = require("../utils/mailer");
 const crypto = require('crypto');
-const { loginRateLimit, resetLimit } = require('../middleware/rateLimit');
+
+// -- Rate limiter inline (max 10 tentatives / IP / 15 min) --
+const _rlMap = new Map();
+const RL_WIN = 15 * 60 * 1000;
+const RL_MAX = 10;
+function loginRateLimit(req, res, next) {
+  const ip  = req.ip || req.socket && req.socket.remoteAddress || 'unknown';
+  const now = Date.now();
+  let e = _rlMap.get(ip);
+  if (!e || now > e.r) e = { c: 0, r: now + RL_WIN };
+  e.c++;
+  _rlMap.set(ip, e);
+  if (_rlMap.size > 5000) { for (const [k,v] of _rlMap) { if (now > v.r) _rlMap.delete(k); } }
+  if (e.c > RL_MAX) {
+    const wait = Math.ceil((e.r - now) / 60000);
+    return res.status(429).json({ error: "Trop de tentatives. Reessayez dans " + wait + " minute(s)." });
+  }
+  next();
+}
+function resetLimit(ip) { _rlMap.delete(ip); }
 
 // ==========================
 //   Inscription
