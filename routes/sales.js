@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const verifyToken = require('../middleware/auth');
+const perm        = require('../middleware/checkPermission');
 
 // ✅ GET toutes les ventes
 router.get('/', verifyToken, async (req, res) => {
@@ -22,7 +23,7 @@ router.get('/', verifyToken, async (req, res) => {
  
     res.json(result.rows);
   } catch (err) {
-    console.error("Erreur GET /sales :", err);
+    console.error("Erreur GET /sales :", err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
@@ -63,7 +64,7 @@ await db.query(
 res.status(201).json(newSale);  // ✅ renvoie la vente complète
 
   } catch (err) {
-    console.error("Erreur POST /sales :", err);
+    console.error("Erreur POST /sales :", err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
@@ -131,7 +132,7 @@ router.patch('/:id', verifyToken, async (req, res) => {
     res.json(updated.rows[0]);
 
   } catch (err) {
-    console.error("Erreur PATCH /sales/:id :", err);
+    console.error("Erreur PATCH /sales/:id :", err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
@@ -149,7 +150,7 @@ router.delete('/:id', verifyToken, async (req, res) => {
 
     res.json({ message: 'Vente annulée' });
   } catch (err) {
-    console.error("Erreur DELETE /sales/:id :", err);
+    console.error("Erreur DELETE /sales/:id :", err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
@@ -174,13 +175,14 @@ router.patch('/:id/partial-payment', verifyToken, async (req, res) => {
     if (vente.paid) return res.status(400).json({ error: 'Crédit déjà entièrement remboursé' });
     if (vente.payment_method !== 'credit') return res.status(400).json({ error: 'Cette vente n\'est pas un crédit' });
 
-    const alreadyPaid = +(vente.amount_paid || 0);
-    const newPaid     = alreadyPaid + +amount;
-    const remaining   = vente.total - newPaid;
+    const alreadyPaid = parseFloat(vente.amount_paid) || 0;
+    const newPaid     = parseFloat((alreadyPaid + parseFloat(amount)).toFixed(2));
+    const total       = parseFloat(vente.total) || 0;
+    const remaining   = parseFloat((total - newPaid).toFixed(2));
 
-    if (newPaid > vente.total) {
+    if (newPaid > total) {
       return res.status(400).json({
-        error: `Montant trop élevé. Restant dû : ${(vente.total - alreadyPaid).toLocaleString('fr-FR')} F`
+        error: `Montant trop élevé. Restant dû : ${(total - alreadyPaid).toLocaleString('fr-FR')} F`
       });
     }
 
@@ -206,7 +208,7 @@ router.patch('/:id/partial-payment', verifyToken, async (req, res) => {
         : `💳 Paiement partiel enregistré — Reste : ${Math.max(0, remaining).toLocaleString('fr-FR')} F`,
     });
   } catch (err) {
-    console.error('PATCH /sales/:id/partial-payment:', err);
+    console.error('PATCH /sales/:id/partial-payment:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
