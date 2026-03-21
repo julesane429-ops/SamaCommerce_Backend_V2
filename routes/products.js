@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const verifyToken = require('../middleware/auth');
+const perm        = require('../middleware/checkPermission');
 
 // GET /products : Liste uniquement les produits de l'utilisateur connecté
 router.get('/', verifyToken, async (req, res) => {
@@ -46,7 +47,7 @@ router.get('/:id', verifyToken, async (req, res) => {
 
 
 // POST /products : Ajoute un produit lié à l'utilisateur connecté
-router.post('/', verifyToken, async (req, res) => {
+router.post('/', verifyToken, perm('stock'), async (req, res) => {
   try {
     console.log('📩 POST /products reçu :', req.body);
     console.log('👤 Utilisateur connecté :', req.user);
@@ -77,7 +78,7 @@ router.post('/', verifyToken, async (req, res) => {
 });
 
 // PATCH /products/:id : Met à jour uniquement les produits appartenant à l'utilisateur
-router.patch('/:id', verifyToken, async (req, res) => {
+router.patch('/:id', verifyToken, perm('stock'), async (req, res) => {
   try {
     console.log('📩 PATCH /products reçu :', req.body);
 
@@ -124,7 +125,7 @@ router.patch('/:id', verifyToken, async (req, res) => {
 });
 
 // DELETE /products/:id : Supprime uniquement les produits appartenant à l'utilisateur
-router.delete('/:id', verifyToken, async (req, res) => {
+router.delete('/:id', verifyToken, perm('stock'), async (req, res) => {
   try {
     const result = await db.query(
       'DELETE FROM products WHERE id = $1 AND user_id = $2 RETURNING *',
