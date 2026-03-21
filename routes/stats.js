@@ -6,7 +6,6 @@ const perm        = require('../middleware/checkPermission');
 
 // Ventes par catégorie
 router.get('/ventes-par-categorie', verifyToken, perm('rapports'), async (req, res) => {
-  console.log("👤 Utilisateur authentifié:", req.user);
   try {
     const { rows } = await db.query(`
       SELECT c.name AS categorie,
