@@ -24,6 +24,7 @@ const returnsRoutes = require('./routes/returns');
 const demoRoutes    = require('./routes/demo');
 const caisseRoutes  = require('./routes/caisse');
 const customerOrdersRoutes = require('./routes/customerOrders');
+const employeeProxy        = require('./middleware/employeeProxy');
 
 // ── CORS ──
 const allowedOrigins = [
@@ -52,6 +53,9 @@ app.use(cors({
 
 app.options('*', cors());
 app.use(express.json());
+
+// ── Proxy employé : redirige les requêtes des employés vers les données de leur boutique ──
+app.use(employeeProxy);
 
 // ══════════════════════════════════════
 // ROUTES EXISTANTES
