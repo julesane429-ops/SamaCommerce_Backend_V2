@@ -69,7 +69,11 @@ async function employeeProxy(req, res, next) {
 
   } catch (err) {
     console.error('employeeProxy error:', err.message);
-    // En cas d'erreur DB, on laisse passer sans proxy (fail-open)
+    // Fail-closed : en cas d'erreur DB on bloque plutôt que de laisser passer
+    // (évite qu'un employé accède à ses propres données vides au lieu de la boutique)
+    return res.status(503).json({
+      error: 'Service temporairement indisponible. Réessayez dans quelques instants.'
+    });
   }
 
   next();
