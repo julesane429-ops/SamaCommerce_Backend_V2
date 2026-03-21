@@ -59,7 +59,7 @@ router.post("/register", async (req, res) => {
 
     res.status(201).json({ message: "Compte créé avec succès", user: result.rows[0] });
   } catch (err) {
-    console.error("❌ Erreur inscription :", err);
+    console.error("❌ Erreur inscription :", err.message);
     res.status(500).json({ error: "Erreur serveur", details: err.message });
   }
 });
@@ -158,7 +158,7 @@ router.post("/login", loginRateLimit, async (req, res) => {
       }
     });
   } catch (err) {
-    console.error("❌ Erreur connexion :", err);
+    console.error("❌ Erreur connexion :", err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -200,7 +200,7 @@ router.get("/users", authenticateToken, async (req, res) => {
     `);
     res.json(result.rows);
   } catch (err) {
-    console.error("❌ Erreur /users :", err);
+    console.error("❌ Erreur /users :", err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -256,7 +256,7 @@ router.get("/me", authenticateToken, async (req, res) => {
     if (!result.rows.length) return res.status(404).json({ error: "Utilisateur introuvable" });
     res.json(result.rows[0]);
   } catch (err) {
-    console.error("❌ /auth/me :", err);
+    console.error("❌ /auth/me :", err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -298,7 +298,7 @@ router.patch("/me", authenticateToken, async (req, res) => {
     );
     res.json({ message: "Profil mis à jour", user: result.rows[0] });
   } catch (err) {
-    console.error("❌ PATCH /auth/me:", err);
+    console.error("❌ PATCH /auth/me:", err.message);
     res.status(500).json({ error: "Erreur serveur" });
   }
 });
@@ -321,7 +321,7 @@ router.get("/me/stats", authenticateToken, async (req, res) => {
       credits_ouverts:  creditQ.rows[0].total,
     });
   } catch (err) {
-    console.error("❌ GET /auth/me/stats:", err);
+    console.error("❌ GET /auth/me/stats:", err.message);
     res.status(500).json({ error: "Erreur serveur" });
   }
 });
@@ -345,7 +345,7 @@ router.put("/upgrade", authenticateToken, async (req, res) => {
     if (!result.rows.length) return res.status(404).json({ error: "Utilisateur introuvable" });
     res.json({ message: "Demande d'upgrade enregistrée", user: result.rows[0] });
   } catch (err) {
-    console.error("❌ Erreur upgrade:", err);
+    console.error("❌ Erreur upgrade:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -398,7 +398,7 @@ router.post("/verify-2fa", async (req, res) => {
     const token = jwt.sign({ id:user.id, username:user.username, role:user.role }, process.env.JWT_SECRET, { expiresIn:"7d" });
     res.json({ token, user });
   } catch (err) {
-    console.error("❌ Erreur verify-2fa:", err);
+    console.error("❌ Erreur verify-2fa:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -431,7 +431,7 @@ router.post('/refresh', async (req, res) => {
 
     res.json({ token: newToken, refresh_token: newRefreshToken });
   } catch (err) {
-    console.error('POST /auth/refresh:', err);
+    console.error('POST /auth/refresh:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
