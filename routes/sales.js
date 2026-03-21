@@ -154,4 +154,60 @@ router.delete('/:id', verifyToken, async (req, res) => {
   }
 });
 
+// ── PATCH /sales/:id/partial-payment ── Paiement partiel
+router.patch('/:id/partial-payment', verifyToken, async (req, res) => {
+  const { amount, payment_method } = req.body;
+
+  if (!amount || isNaN(+amount) || +amount <= 0) {
+    return res.status(400).json({ error: 'Montant invalide' });
+  }
+
+  try {
+    // Récupérer la vente
+    const { rows } = await db.query(
+      'SELECT * FROM sales WHERE id = $1 AND user_id = $2',
+      [req.params.id, req.user.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Vente introuvable' });
+
+    const vente = rows[0];
+    if (vente.paid) return res.status(400).json({ error: 'Crédit déjà entièrement remboursé' });
+    if (vente.payment_method !== 'credit') return res.status(400).json({ error: 'Cette vente n\'est pas un crédit' });
+
+    const alreadyPaid = +(vente.amount_paid || 0);
+    const newPaid     = alreadyPaid + +amount;
+    const remaining   = vente.total - newPaid;
+
+    if (newPaid > vente.total) {
+      return res.status(400).json({
+        error: `Montant trop élevé. Restant dû : ${(vente.total - alreadyPaid).toLocaleString('fr-FR')} F`
+      });
+    }
+
+    const isFullyPaid = remaining <= 0;
+
+    const { rows: updated } = await db.query(
+      `UPDATE sales
+       SET amount_paid       = $1,
+           paid              = $2,
+           repayment_method  = COALESCE($3, repayment_method)
+       WHERE id = $4 AND user_id = $5
+       RETURNING *`,
+      [newPaid, isFullyPaid, payment_method || null, req.params.id, req.user.id]
+    );
+
+    res.json({
+      sale:          updated[0],
+      amount_paid:   newPaid,
+      remaining:     Math.max(0, remaining),
+      fully_paid:    isFullyPaid,
+      message:       isFullyPaid
+        ? '✅ Crédit entièrement remboursé'
+        : `💳 Paiement partiel enregistré — Reste : ${Math.max(0, remaining).toLocaleString('fr-FR')} F`,
+    });
+  } catch (err) {
+    console.error('PATCH /sales/:id/partial-payment:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
 module.exports = router;
