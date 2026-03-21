@@ -6,9 +6,10 @@ const express    = require('express');
 const router     = express.Router();
 const db         = require('../db');
 const verifyToken = require('../middleware/auth');
+const perm        = require('../middleware/checkPermission');
  
 // ── GET /caisse/today ── Données de caisse du jour
-router.get('/today', verifyToken, async (req, res) => {
+router.get('/today', verifyToken, perm('rapports'), async (req, res) => {
   try {
     const { rows } = await db.query(`
       SELECT
@@ -85,7 +86,7 @@ router.post('/close', verifyToken, async (req, res) => {
 });
  
 // ── GET /caisse/history ── Historique des clôtures
-router.get('/history', verifyToken, async (req, res) => {
+router.get('/history', verifyToken, perm('rapports'), async (req, res) => {
   try {
     const { rows } = await db.query(
       'SELECT * FROM caisse_closings WHERE user_id = $1 ORDER BY date DESC LIMIT 30',
@@ -104,18 +105,18 @@ router.get('/history', verifyToken, async (req, res) => {
 // ═══════════════════════════════════════════════════════════
 
 // ── GET /caisse/weekly ── 7 derniers jours depuis les ventes
-router.get('/weekly', verifyToken, async (req, res) => {
+router.get('/weekly', verifyToken, perm('rapports'), async (req, res) => {
   try {
     const { rows } = await db.query(`
       SELECT
-        DATE(created_at AT TIME ZONE 'UTC')                                       AS date,
-        TO_CHAR(DATE(created_at AT TIME ZONE 'UTC'), 'Dy DD')                     AS label,
-        (COUNT(*) FILTER (WHERE paid = true))::int                                AS nb_ventes,
-        COALESCE(SUM(total) FILTER (WHERE paid = true), 0)                        AS total_encaisse,
-        COALESCE(SUM(total) FILTER (WHERE payment_method = 'especes' AND paid = true), 0) AS especes,
-        COALESCE(SUM(total) FILTER (WHERE payment_method = 'wave'    AND paid = true), 0) AS wave,
-        COALESCE(SUM(total) FILTER (WHERE payment_method = 'orange'  AND paid = true), 0) AS orange,
-        COALESCE(SUM(total) FILTER (WHERE paid = false), 0)                       AS credits
+        DATE(created_at AT TIME ZONE 'UTC')                              AS date,
+        TO_CHAR(created_at AT TIME ZONE 'UTC', 'Dy DD')                 AS label,
+        COUNT(*) FILTER (WHERE paid = true)::int                        AS nb_ventes,
+        COALESCE(SUM(total) FILTER (WHERE paid = true), 0)::numeric     AS total_encaisse,
+        COALESCE(SUM(total) FILTER (WHERE payment_method='especes' AND paid=true), 0) AS especes,
+        COALESCE(SUM(total) FILTER (WHERE payment_method='wave'    AND paid=true), 0) AS wave,
+        COALESCE(SUM(total) FILTER (WHERE payment_method='orange'  AND paid=true), 0) AS orange,
+        COALESCE(SUM(total) FILTER (WHERE paid = false), 0)             AS credits
       FROM sales
       WHERE user_id = $1
         AND created_at >= NOW() - INTERVAL '7 days'
@@ -128,13 +129,10 @@ router.get('/weekly', verifyToken, async (req, res) => {
     for (let i = 6; i >= 0; i--) {
       const d  = new Date(); d.setDate(d.getDate() - i); d.setHours(0,0,0,0);
       const ds = d.toISOString().split('T')[0];
-      const existing = rows.find(r => {
-        const rd = r.date instanceof Date ? r.date.toISOString().split('T')[0] : String(r.date).split('T')[0];
-        return rd === ds;
-      });
+      const existing = rows.find(r => r.date?.toISOString?.()?.split('T')[0] === ds || r.date === ds);
       result.push(existing || {
         date:           ds,
-        label:          d.toLocaleDateString('fr-FR', { weekday: 'short', day: '2-digit' }),
+        label:          d.toLocaleDateString('fr-FR', { weekday:'short', day:'2-digit' }),
         nb_ventes:      0,
         total_encaisse: 0,
         especes:        0,
@@ -146,9 +144,8 @@ router.get('/weekly', verifyToken, async (req, res) => {
 
     res.json(result);
   } catch (err) {
-    console.error('GET /caisse/weekly:', err.message);
-    res.status(500).json({ error: 'Erreur serveur', detail: err.message });
+    console.error('GET /caisse/weekly:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
   }
 });
-
 module.exports = router;
