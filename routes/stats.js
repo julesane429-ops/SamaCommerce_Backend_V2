@@ -2,9 +2,10 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const verifyToken = require('../middleware/auth');
+const perm        = require('../middleware/checkPermission');
 
 // Ventes par catégorie
-router.get('/ventes-par-categorie', verifyToken, async (req, res) => {
+router.get('/ventes-par-categorie', verifyToken, perm('rapports'), async (req, res) => {
   console.log("👤 Utilisateur authentifié:", req.user);
   try {
     const { rows } = await db.query(`
@@ -26,7 +27,7 @@ router.get('/ventes-par-categorie', verifyToken, async (req, res) => {
 });
 
 // Ventes par jour
-router.get('/ventes-par-jour', verifyToken, async (req, res) => {
+router.get('/ventes-par-jour', verifyToken, perm('rapports'), async (req, res) => {
   try {
     const { rows } = await db.query(`
       SELECT DATE(s.created_at) AS date,
