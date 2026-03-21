@@ -5,6 +5,8 @@ const cron = require('node-cron');
 const pool = require('./db');
 const path = require('path');
 
+const { deliveries: deliveriesRoutes, deliverymen: deliverymenRoutes } = require('./routes/deliveries');
+
 const app  = express();
 const port = process.env.PORT || 4000;
 
@@ -21,6 +23,8 @@ const membersRoutes = require('./routes/members');
 const returnsRoutes = require('./routes/returns');
 const demoRoutes    = require('./routes/demo');
 const caisseRoutes  = require('./routes/caisse');
+const customerOrdersRoutes = require('./routes/customerOrders');
+
 // ── CORS ──
 const allowedOrigins = [
   'https://samacommerce-frontend-v2-1.onrender.com',
@@ -75,7 +79,10 @@ app.use('/members',  membersRoutes);
 app.use('/returns',  returnsRoutes);
 app.use('/demo',     demoRoutes);
 app.use('/caisse',   caisseRoutes);
-
+ 
+app.use('/customer-orders', customerOrdersRoutes);
+app.use('/deliveries',      deliveriesRoutes);
+app.use('/deliverymen',     deliverymenRoutes);
 
 // Servir les fichiers statiques
 app.use(express.static(path.join(process.cwd())));
