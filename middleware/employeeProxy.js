@@ -17,8 +17,14 @@ const cache = new Map(); // key: member_user_id → { boutiqueId, permissions, e
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
 async function employeeProxy(req, res, next) {
-  // Pas de user décodé = pas encore passé par verifyToken, on laisse passer
+  // Pas de user décodé = pas encore passé par verifyToken
   if (!req.user?.id) return next();
+
+  // Les routes /members gèrent elles-mêmes realId vs boutiqueId
+  // Ne pas les proxifier pour éviter de casser /members/my-boutique et /members/accept
+  if (req.path && req.path.startsWith('/members')) return next();
+  // Même chose pour /auth (refresh, verify-2fa, etc.)
+  if (req.path && req.path.startsWith('/auth')) return next();
 
   const userId = req.user.id;
 
