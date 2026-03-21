@@ -26,7 +26,7 @@ router.get('/', verifyToken, async (req, res) => {
     `, [req.user.id]);
     res.json(rows);
   } catch (err) {
-    console.error('GET /members:', err);
+    console.error('GET /members:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
@@ -81,7 +81,7 @@ router.post('/invite', verifyToken, async (req, res) => {
       invite_link: `${req.headers.origin || 'https://samacommerce-frontend-v2-1.onrender.com'}/login/login.html?invite=${token}`,
     });
   } catch (err) {
-    console.error('POST /members/invite:', err);
+    console.error('POST /members/invite:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
@@ -92,11 +92,35 @@ router.post('/accept', verifyToken, async (req, res) => {
   if (!invite_token) return res.status(400).json({ error: 'Token requis' });
 
   try {
+    // Chercher d'abord une invitation pending avec ce token
     const { rows } = await db.query(
       "SELECT * FROM boutique_members WHERE invite_token = $1 AND status = 'pending'",
       [invite_token]
     );
-    if (!rows.length) return res.status(404).json({ error: 'Invitation invalide ou expirée' });
+
+    // Si pas trouvée en pending, vérifier si elle a déjà été acceptée par cet utilisateur
+    if (!rows.length) {
+      const memberId = req.user.realId || req.user.id;
+      const { rows: alreadyAccepted } = await db.query(
+        `SELECT bm.*, u.company_name, u.username AS boutique_email
+         FROM boutique_members bm
+         JOIN users u ON bm.boutique_id = u.id
+         WHERE bm.member_id = $1 AND bm.status = 'accepted'
+         LIMIT 1`,
+        [memberId]
+      );
+      if (alreadyAccepted.length) {
+        // Déjà membre → renvoyer les infos de la boutique comme si c'était un succès
+        return res.json({
+          message: 'Vous êtes déjà membre de cette boutique',
+          already_member: true,
+          boutique: { id: alreadyAccepted[0].boutique_id, company_name: alreadyAccepted[0].company_name },
+          role: alreadyAccepted[0].role,
+          permissions: alreadyAccepted[0].permissions,
+        });
+      }
+      return res.status(404).json({ error: 'Invitation invalide ou expirée' });
+    }
 
     const invite = rows[0];
 
@@ -130,7 +154,7 @@ router.post('/accept', verifyToken, async (req, res) => {
       role: invite.role,
     });
   } catch (err) {
-    console.error('POST /members/accept:', err);
+    console.error('POST /members/accept:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
@@ -156,7 +180,7 @@ router.patch('/:id', verifyToken, async (req, res) => {
 
     res.json(rows[0]);
   } catch (err) {
-    console.error('PATCH /members/:id:', err);
+    console.error('PATCH /members/:id:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
@@ -178,7 +202,7 @@ router.delete('/:id', verifyToken, async (req, res) => {
 
     res.json({ message: 'Membre retiré' });
   } catch (err) {
-    console.error('DELETE /members/:id:', err);
+    console.error('DELETE /members/:id:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
@@ -201,7 +225,40 @@ router.get('/my-boutique', verifyToken, async (req, res) => {
     if (!rows.length) return res.json(null);
     res.json(rows[0]);
   } catch (err) {
-    console.error('GET /members/my-boutique:', err);
+    console.error('GET /members/my-boutique:', err.message);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+
+// ── POST /members/:id/resend ── Rengénérer un lien d'invitation expiré
+router.post('/:id/resend', verifyToken, async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      "SELECT * FROM boutique_members WHERE id = $1 AND boutique_id = $2 AND status = 'pending'",
+      [req.params.id, req.user.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Membre introuvable ou déjà accepté' });
+
+    const token     = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + INVITE_TTL_HOURS * 3600 * 1000);
+
+    await db.query(
+      `UPDATE boutique_members
+       SET invite_token = $1, invite_expires_at = $2
+       WHERE id = $3 AND boutique_id = $4`,
+      [token, expiresAt, req.params.id, req.user.id]
+    );
+
+    const link = `${req.headers.origin || 'https://samacommerce-frontend-v2-1.onrender.com'}/login/login.html?invite=${token}&email=${encodeURIComponent(rows[0].email)}`;
+
+    res.json({
+      message: 'Lien renvoyé',
+      invite_link: link,
+      expires_at: expiresAt,
+    });
+  } catch (err) {
+    console.error('POST /members/:id/resend:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
