@@ -6,7 +6,7 @@ const pool = require("../db");
 const sendEmail = require("../utils/mailer");
 const crypto = require('crypto');
 
-// -- Rate limiter inline (max 10 tentatives / IP / 15 min) --
+// ── Rate limiter inline (max 10 tentatives / IP / 15 min) ─────────────────
 const _rlMap = new Map();
 const RL_WIN = 15 * 60 * 1000;
 const RL_MAX = 10;
@@ -26,9 +26,7 @@ function loginRateLimit(req, res, next) {
 }
 function resetLimit(ip) { _rlMap.delete(ip); }
 
-// ==========================
-//   Inscription
-// ==========================
+// ── Inscription ────────────────────────────────────────────────────────────
 router.post("/register", async (req, res) => {
   const {
     username, password, company_name, phone,
@@ -49,9 +47,9 @@ router.post("/register", async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const result = await pool.query(
-      `INSERT INTO users 
-        (username, password, company_name, phone, role, status, plan, payment_status, payment_method, expiration, amount, upgrade_status) 
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) 
+      `INSERT INTO users
+        (username, password, company_name, phone, role, status, plan, payment_status, payment_method, expiration, amount, upgrade_status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
        RETURNING id, username, company_name, phone, role, status, plan, payment_status, payment_method, expiration, amount, upgrade_status`,
       [username, hashedPassword, company_name||null, phone||null, role, status, plan,
        payment_status, payment_method||null, expiration||null, amount, upgrade_status]
@@ -64,9 +62,7 @@ router.post("/register", async (req, res) => {
   }
 });
 
-// ==========================
-//   Connexion (avec 2FA)
-// ==========================
+// ── Connexion (avec 2FA) ───────────────────────────────────────────────────
 router.post("/login", loginRateLimit, async (req, res) => {
   const { username, password } = req.body;
 
@@ -139,7 +135,6 @@ router.post("/login", loginRateLimit, async (req, res) => {
         [user.id, refreshToken, refreshExpiry]
       );
     } catch (rtErr) {
-      // Si la table n'existe pas encore, on continue sans refresh token
       console.warn('⚠️ refresh_tokens non disponible:', rtErr.message);
       refreshToken = null;
     }
@@ -163,9 +158,7 @@ router.post("/login", loginRateLimit, async (req, res) => {
   }
 });
 
-// ==========================
-//   Middleware Auth
-// ==========================
+// ── Middleware Auth ────────────────────────────────────────────────────────
 function authenticateToken(req, res, next) {
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1];
@@ -178,9 +171,7 @@ function authenticateToken(req, res, next) {
   });
 }
 
-// ==========================
-//   Middleware Admin
-// ==========================
+// ── Middleware Admin ───────────────────────────────────────────────────────
 function isAdmin(req, res, next) {
   if (req.user.role !== "admin") {
     return res.status(403).json({ error: "Accès réservé aux administrateurs" });
@@ -188,10 +179,11 @@ function isAdmin(req, res, next) {
   next();
 }
 
-// ==========================
-//   Liste des utilisateurs
-// ==========================
-router.get("/users", authenticateToken, async (req, res) => {
+// ── Liste des utilisateurs ─────────────────────────────────────────────────
+// CORRECTION #4 : isAdmin ajouté. Avant ce correctif, n'importe quel
+// utilisateur connecté (même Free) pouvait récupérer la liste complète
+// de tous les comptes avec leurs informations de paiement.
+router.get("/users", authenticateToken, isAdmin, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT id, username, company_name, phone, role, status, plan,
@@ -205,7 +197,7 @@ router.get("/users", authenticateToken, async (req, res) => {
   }
 });
 
-// Bloquer
+// ── Bloquer un utilisateur ─────────────────────────────────────────────────
 router.put("/users/:id/block", authenticateToken, isAdmin, async (req, res) => {
   try {
     const result = await pool.query("UPDATE users SET status = 'Bloqué' WHERE id = $1 RETURNING *", [req.params.id]);
@@ -214,7 +206,7 @@ router.put("/users/:id/block", authenticateToken, isAdmin, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Réactiver
+// ── Réactiver un utilisateur ───────────────────────────────────────────────
 router.put("/users/:id/activate", authenticateToken, isAdmin, async (req, res) => {
   try {
     const result = await pool.query("UPDATE users SET status = 'Actif', payment_status = 'À jour' WHERE id = $1 RETURNING *", [req.params.id]);
@@ -223,7 +215,7 @@ router.put("/users/:id/activate", authenticateToken, isAdmin, async (req, res) =
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Supprimer
+// ── Supprimer un utilisateur ───────────────────────────────────────────────
 router.delete("/users/:id", authenticateToken, isAdmin, async (req, res) => {
   try {
     const result = await pool.query("DELETE FROM users WHERE id = $1 RETURNING *", [req.params.id]);
@@ -232,7 +224,7 @@ router.delete("/users/:id", authenticateToken, isAdmin, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Rappel
+// ── Rappel paiement ────────────────────────────────────────────────────────
 router.post("/users/:id/reminder", authenticateToken, isAdmin, async (req, res) => {
   try {
     const user = await pool.query("SELECT username FROM users WHERE id = $1", [req.params.id]);
@@ -242,9 +234,7 @@ router.post("/users/:id/reminder", authenticateToken, isAdmin, async (req, res) 
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ==========================
-//   /auth/me
-// ==========================
+// ── GET /auth/me ───────────────────────────────────────────────────────────
 router.get("/me", authenticateToken, async (req, res) => {
   try {
     const result = await pool.query(
@@ -261,9 +251,7 @@ router.get("/me", authenticateToken, async (req, res) => {
   }
 });
 
-// ==========================
-//   PATCH /auth/me — Modifier profil
-// ==========================
+// ── PATCH /auth/me — Modifier profil ──────────────────────────────────────
 router.patch("/me", authenticateToken, async (req, res) => {
   try {
     const { company_name, phone, current_password, new_password } = req.body;
@@ -303,22 +291,20 @@ router.patch("/me", authenticateToken, async (req, res) => {
   }
 });
 
-// ==========================
-//   GET /auth/me/stats
-// ==========================
+// ── GET /auth/me/stats ─────────────────────────────────────────────────────
 router.get("/me/stats", authenticateToken, async (req, res) => {
   try {
     const uid = req.user.id;
     const [prodQ, venteQ, creditQ] = await Promise.all([
-      pool.query("SELECT COUNT(*)::int AS total FROM products WHERE user_id = $1", [uid]),
+      pool.query("SELECT COUNT(*)::int AS total FROM products WHERE user_id = $1 AND deleted_at IS NULL", [uid]),
       pool.query("SELECT COUNT(*)::int AS total, COALESCE(SUM(total),0) AS ca FROM sales WHERE user_id = $1", [uid]),
       pool.query("SELECT COUNT(*)::int AS total FROM sales WHERE user_id = $1 AND payment_method = 'credit' AND paid = false", [uid]),
     ]);
     res.json({
-      nb_produits:      prodQ.rows[0].total,
-      nb_ventes:        venteQ.rows[0].total,
-      ca_total:         Number(venteQ.rows[0].ca),
-      credits_ouverts:  creditQ.rows[0].total,
+      nb_produits:     prodQ.rows[0].total,
+      nb_ventes:       venteQ.rows[0].total,
+      ca_total:        Number(venteQ.rows[0].ca),
+      credits_ouverts: creditQ.rows[0].total,
     });
   } catch (err) {
     console.error("❌ GET /auth/me/stats:", err.message);
@@ -326,9 +312,7 @@ router.get("/me/stats", authenticateToken, async (req, res) => {
   }
 });
 
-// ==========================
-//   Upgrade Premium
-// ==========================
+// ── Upgrade Premium ────────────────────────────────────────────────────────
 router.put("/upgrade", authenticateToken, async (req, res) => {
   const { phone, payment_method, amount, expiration } = req.body;
   if (!phone || !payment_method || !amount || !expiration) {
@@ -372,9 +356,7 @@ router.put('/upgrade/:userId/reject', authenticateToken, isAdmin, async (req, re
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ==========================
-//   2FA
-// ==========================
+// ── 2FA ───────────────────────────────────────────────────────────────────
 router.post("/verify-2fa", async (req, res) => {
   const { userId, code } = req.body;
   if (!userId || !code) return res.status(400).json({ error: "Champs manquants" });
@@ -394,7 +376,7 @@ router.post("/verify-2fa", async (req, res) => {
       "SELECT id, username, role, company_name, phone, plan, upgrade_status FROM users WHERE id=$1",
       [userId]
     );
-    const user = u.rows[0];
+    const user  = u.rows[0];
     const token = jwt.sign({ id:user.id, username:user.username, role:user.role }, process.env.JWT_SECRET, { expiresIn:"7d" });
     res.json({ token, user });
   } catch (err) {
@@ -403,9 +385,7 @@ router.post("/verify-2fa", async (req, res) => {
   }
 });
 
-// ==========================
-//   Refresh Token
-// ==========================
+// ── Refresh Token ──────────────────────────────────────────────────────────
 router.post('/refresh', async (req, res) => {
   const { refresh_token } = req.body;
   if (!refresh_token) return res.status(400).json({ error: 'refresh_token manquant' });
@@ -436,9 +416,7 @@ router.post('/refresh', async (req, res) => {
   }
 });
 
-// ==========================
-//   Logout
-// ==========================
+// ── Logout ─────────────────────────────────────────────────────────────────
 router.post('/logout', async (req, res) => {
   const { refresh_token } = req.body;
   if (refresh_token) {
