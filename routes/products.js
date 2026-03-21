@@ -5,15 +5,17 @@ const db = require('../db');
 const verifyToken = require('../middleware/auth');
 const perm        = require('../middleware/checkPermission');
 
-// GET /products : Liste uniquement les produits de l'utilisateur connecté
+// ── GET /products ─────────────────────────────────────────────────────────
+// CORRECTION #10 : filtrage des produits soft-deletés (deleted_at IS NULL).
+// Avant ce correctif, les produits marqués comme supprimés continuaient
+// d'apparaître dans l'inventaire et dans le formulaire de vente.
 router.get('/', verifyToken, async (req, res) => {
   try {
-    const userId = req.user.id;
     const result = await db.query(
-      'SELECT * FROM products WHERE user_id = $1 ORDER BY id DESC',
-      [userId]
+      // ✅ Exclure les produits dont deleted_at est renseigné (suppression logique)
+      'SELECT * FROM products WHERE user_id = $1 AND deleted_at IS NULL ORDER BY id DESC',
+      [req.user.id]
     );
-
     res.json(result.rows);
   } catch (err) {
     console.error('Erreur GET /products:', err);
@@ -21,15 +23,13 @@ router.get('/', verifyToken, async (req, res) => {
   }
 });
 
-// ✅ GET /products/:id : Récupère un produit spécifique (sécurisé par user_id)
+// ── GET /products/:id ─────────────────────────────────────────────────────
+// ✅ Idem : on exclut les produits soft-deletés à la récupération unitaire.
 router.get('/:id', verifyToken, async (req, res) => {
   try {
-    const userId = req.user.id;
-    const productId = req.params.id;
-
     const result = await db.query(
-      'SELECT * FROM products WHERE id = $1 AND user_id = $2',
-      [productId, userId]
+      'SELECT * FROM products WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL',
+      [req.params.id, req.user.id]
     );
 
     if (result.rows.length === 0) {
@@ -43,26 +43,25 @@ router.get('/:id', verifyToken, async (req, res) => {
   }
 });
 
-
-// POST /products : Ajoute un produit lié à l'utilisateur connecté
+// ── POST /products ────────────────────────────────────────────────────────
 router.post('/', verifyToken, perm('stock'), async (req, res) => {
   try {
-
     const { name, category_id, scent, price, stock, price_achat, image_url } = req.body;
     const userId = req.user.id;
 
     const result = await db.query(
       `INSERT INTO products (name, category_id, scent, price, stock, price_achat, user_id, image_url)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
       [
         name,
         category_id,
         scent,
-        Number.isFinite(+price) ? +price : 0,
-        Number.isFinite(+stock) ? +stock : 0,
+        Number.isFinite(+price)       ? +price       : 0,
+        Number.isFinite(+stock)       ? +stock       : 0,
         Number.isFinite(+price_achat) ? +price_achat : 0,
-        userId, image_url || null
+        userId,
+        image_url || null
       ]
     );
 
@@ -73,17 +72,17 @@ router.post('/', verifyToken, perm('stock'), async (req, res) => {
   }
 });
 
-// PATCH /products/:id : Met à jour uniquement les produits appartenant à l'utilisateur
+// ── PATCH /products/:id ───────────────────────────────────────────────────
+// ✅ On vérifie aussi que le produit n'est pas soft-deleté avant de le modifier.
 router.patch('/:id', verifyToken, perm('stock'), async (req, res) => {
   try {
-
     const fields = ['name', 'category_id', 'scent', 'price', 'stock', 'price_achat', 'image_url'];
-    const set = [];
+    const set    = [];
     const values = [];
     let i = 1;
 
     for (const f of fields) {
-      if (req.body.hasOwnProperty(f)) {
+      if (Object.prototype.hasOwnProperty.call(req.body, f)) {
         if (['price', 'stock', 'price_achat', 'category_id'].includes(f)) {
           values.push(Number.isFinite(+req.body[f]) ? +req.body[f] : 0);
         } else {
@@ -97,13 +96,13 @@ router.patch('/:id', verifyToken, perm('stock'), async (req, res) => {
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
     }
 
-    // Ajout du filtre par user_id pour sécuriser la modification
     values.push(req.params.id);
     values.push(req.user.id);
 
     const result = await db.query(
+      // ✅ deleted_at IS NULL : on n'édite pas un produit déjà supprimé
       `UPDATE products SET ${set.join(', ')}
-       WHERE id = $${i++} AND user_id = $${i}
+       WHERE id = $${i++} AND user_id = $${i} AND deleted_at IS NULL
        RETURNING *`,
       values
     );
@@ -119,11 +118,17 @@ router.patch('/:id', verifyToken, perm('stock'), async (req, res) => {
   }
 });
 
-// DELETE /products/:id : Supprime uniquement les produits appartenant à l'utilisateur
+// ── DELETE /products/:id ──────────────────────────────────────────────────
+// Suppression LOGIQUE (soft delete) : on renseigne deleted_at au lieu de
+// supprimer la ligne. L'historique des ventes conserve ainsi la référence
+// au produit (clé étrangère sales.product_id non rompue).
 router.delete('/:id', verifyToken, perm('stock'), async (req, res) => {
   try {
     const result = await db.query(
-      'DELETE FROM products WHERE id = $1 AND user_id = $2 RETURNING *',
+      `UPDATE products
+       SET deleted_at = NOW()
+       WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
+       RETURNING *`,
       [req.params.id, req.user.id]
     );
 
@@ -137,12 +142,13 @@ router.delete('/:id', verifyToken, perm('stock'), async (req, res) => {
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
-// DELETE /products/:id/image — Supprimer l'image d'un produit
+
+// ── DELETE /products/:id/image ────────────────────────────────────────────
 router.delete('/:id/image', verifyToken, async (req, res) => {
   try {
     const result = await db.query(
       `UPDATE products SET image_url = NULL
-       WHERE id = $1 AND user_id = $2
+       WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
        RETURNING id`,
       [req.params.id, req.user.id]
     );
@@ -153,4 +159,5 @@ router.delete('/:id/image', verifyToken, async (req, res) => {
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
+
 module.exports = router;
