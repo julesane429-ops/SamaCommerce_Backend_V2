@@ -109,12 +109,13 @@ router.post('/accept', verifyToken, async (req, res) => {
       return res.status(410).json({ error: 'Cette invitation a expiré. Demandez une nouvelle invitation.' });
     }
 
-    // Mettre à jour le membre
+    // Mettre à jour le membre — utiliser realId si proxy actif
+    const memberId = req.user.realId || req.user.id;
     await db.query(`
       UPDATE boutique_members
       SET status = 'accepted', member_id = $1, accepted_at = NOW(), invite_token = NULL
       WHERE id = $2
-    `, [req.user.id, invite.id]);
+    `, [memberId, invite.id]);
 
     // Récupérer les infos de la boutique principale
     const { rows: boutique } = await db.query(
@@ -185,6 +186,9 @@ router.delete('/:id', verifyToken, async (req, res) => {
 // ── GET /members/my-boutique ── Infos de la boutique principale (pour un employé)
 router.get('/my-boutique', verifyToken, async (req, res) => {
   try {
+    // Utiliser realId si le proxy a déjà remplacé req.user.id
+    const memberId = req.user.realId || req.user.id;
+
     const { rows } = await db.query(`
       SELECT bm.permissions, bm.role,
              u.id AS boutique_id, u.company_name, u.username AS boutique_email
@@ -192,7 +196,7 @@ router.get('/my-boutique', verifyToken, async (req, res) => {
       JOIN users u ON bm.boutique_id = u.id
       WHERE bm.member_id = $1 AND bm.status = 'accepted'
       LIMIT 1
-    `, [req.user.id]);
+    `, [memberId]);
 
     if (!rows.length) return res.json(null);
     res.json(rows[0]);
