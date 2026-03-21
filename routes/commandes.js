@@ -1,19 +1,22 @@
-// routes/commandes.js
+// routes/commandes.js — Commandes de réapprovisionnement fournisseurs
+// Table renommée : commandes → restock_orders
+//                  commande_items → (inchangée)
+//                  livraisons → restock_deliveries
 const express = require('express');
 const router  = express.Router();
 const db      = require('../db');
 const verify  = require('../middleware/auth');
 
-// ─── GET /commandes ─── Liste des commandes avec fournisseur + items
+// ─── GET /commandes ─── Liste des commandes fournisseurs
 router.get('/', verify, async (req, res) => {
   try {
     const { rows } = await db.query(
       `SELECT c.*,
-              f.name AS fournisseur_name,
+              f.name  AS fournisseur_name,
               f.phone AS fournisseur_phone,
-              COUNT(ci.id) AS nb_items
-       FROM commandes c
-       LEFT JOIN fournisseurs f  ON f.id = c.fournisseur_id
+              COUNT(ci.id)::int AS nb_items
+       FROM restock_orders c
+       LEFT JOIN fournisseurs  f  ON f.id = c.fournisseur_id
        LEFT JOIN commande_items ci ON ci.commande_id = c.id
        WHERE c.user_id = $1
        GROUP BY c.id, f.name, f.phone
@@ -27,19 +30,18 @@ router.get('/', verify, async (req, res) => {
   }
 });
 
-// ─── GET /commandes/:id ─── Détail commande + lignes + livraison
+// ─── GET /commandes/:id ─── Détail commande + lignes + livraison liée
 router.get('/:id', verify, async (req, res) => {
   try {
     const { rows } = await db.query(
       `SELECT c.*, f.name AS fournisseur_name, f.phone AS fournisseur_phone
-       FROM commandes c
+       FROM restock_orders c
        LEFT JOIN fournisseurs f ON f.id = c.fournisseur_id
        WHERE c.id = $1 AND c.user_id = $2`,
       [req.params.id, req.user.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Commande introuvable' });
 
-    // Lignes de commande
     const { rows: items } = await db.query(
       `SELECT ci.*, p.name AS product_name, p.stock AS product_stock
        FROM commande_items ci
@@ -48,9 +50,9 @@ router.get('/:id', verify, async (req, res) => {
       [req.params.id]
     );
 
-    // Livraison associée
     const { rows: livraisons } = await db.query(
-      'SELECT * FROM livraisons WHERE commande_id = $1 ORDER BY created_at DESC LIMIT 1',
+      `SELECT * FROM restock_deliveries
+       WHERE commande_id = $1 ORDER BY created_at DESC LIMIT 1`,
       [req.params.id]
     );
 
@@ -68,25 +70,21 @@ router.post('/', verify, async (req, res) => {
     await client.query('BEGIN');
 
     const { fournisseur_id, notes, expected_date, items } = req.body;
-    // items = [{ product_id, quantity, prix_unitaire }, ...]
-
-    if (!items || !items.length) {
+    if (!items?.length) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Au moins un article requis' });
     }
 
-    // Calculer le total
     const total = items.reduce((s, it) => s + (it.quantity * it.prix_unitaire), 0);
 
-    // Créer la commande
     const { rows: cmdRows } = await client.query(
-      `INSERT INTO commandes (user_id, fournisseur_id, total, notes, expected_date, status)
+      `INSERT INTO restock_orders
+         (user_id, fournisseur_id, total, notes, expected_date, status)
        VALUES ($1,$2,$3,$4,$5,'en_attente') RETURNING *`,
-      [req.user.id, fournisseur_id || null, total, notes || null, expected_date || null]
+      [req.user.id, fournisseur_id||null, total, notes||null, expected_date||null]
     );
     const commande = cmdRows[0];
 
-    // Insérer les lignes
     for (const it of items) {
       await client.query(
         `INSERT INTO commande_items (commande_id, product_id, quantity, prix_unitaire)
@@ -112,18 +110,14 @@ router.patch('/:id', verify, async (req, res) => {
     const allowed = ['status', 'notes', 'expected_date', 'fournisseur_id'];
     const set = [], values = [];
     let i = 1;
-
     for (const f of allowed) {
-      if (req.body.hasOwnProperty(f)) {
-        set.push(`${f} = $${i++}`);
-        values.push(req.body[f]);
-      }
+      if (req.body.hasOwnProperty(f)) { set.push(`${f} = $${i++}`); values.push(req.body[f]); }
     }
     if (!set.length) return res.status(400).json({ error: 'Aucun champ' });
 
     values.push(req.params.id, req.user.id);
     const { rows } = await db.query(
-      `UPDATE commandes SET ${set.join(', ')}
+      `UPDATE restock_orders SET ${set.join(', ')}
        WHERE id = $${i++} AND user_id = $${i} RETURNING *`,
       values
     );
@@ -141,9 +135,8 @@ router.patch('/:id/recevoir', verify, async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    // Vérifier ownership
     const { rows: cmdRows } = await client.query(
-      'SELECT * FROM commandes WHERE id = $1 AND user_id = $2',
+      'SELECT * FROM restock_orders WHERE id = $1 AND user_id = $2',
       [req.params.id, req.user.id]
     );
     if (!cmdRows.length) {
@@ -151,13 +144,11 @@ router.patch('/:id/recevoir', verify, async (req, res) => {
       return res.status(404).json({ error: 'Commande introuvable' });
     }
 
-    // Récupérer les items
     const { rows: items } = await client.query(
       'SELECT * FROM commande_items WHERE commande_id = $1',
       [req.params.id]
     );
 
-    // Incrémenter le stock de chaque produit
     for (const it of items) {
       await client.query(
         'UPDATE products SET stock = stock + $1 WHERE id = $2 AND user_id = $3',
@@ -165,9 +156,8 @@ router.patch('/:id/recevoir', verify, async (req, res) => {
       );
     }
 
-    // Mettre à jour le statut
     const { rows: updated } = await client.query(
-      `UPDATE commandes SET status = 'recue'
+      `UPDATE restock_orders SET status = 'recue'
        WHERE id = $1 AND user_id = $2 RETURNING *`,
       [req.params.id, req.user.id]
     );
@@ -183,11 +173,11 @@ router.patch('/:id/recevoir', verify, async (req, res) => {
   }
 });
 
-// ─── DELETE /commandes/:id ─── Annuler/supprimer
+// ─── DELETE /commandes/:id ───
 router.delete('/:id', verify, async (req, res) => {
   try {
     const { rows } = await db.query(
-      'DELETE FROM commandes WHERE id = $1 AND user_id = $2 RETURNING *',
+      'DELETE FROM restock_orders WHERE id = $1 AND user_id = $2 RETURNING *',
       [req.params.id, req.user.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Commande introuvable' });
@@ -201,9 +191,8 @@ router.delete('/:id', verify, async (req, res) => {
 // ─── POST /commandes/:id/items ─── Ajouter une ligne
 router.post('/:id/items', verify, async (req, res) => {
   try {
-    // Vérifier ownership
     const { rows: cmd } = await db.query(
-      'SELECT id FROM commandes WHERE id = $1 AND user_id = $2',
+      'SELECT id FROM restock_orders WHERE id = $1 AND user_id = $2',
       [req.params.id, req.user.id]
     );
     if (!cmd.length) return res.status(404).json({ error: 'Commande introuvable' });
@@ -215,9 +204,8 @@ router.post('/:id/items', verify, async (req, res) => {
       [req.params.id, product_id, quantity, prix_unitaire]
     );
 
-    // Recalculer le total
     await db.query(
-      `UPDATE commandes
+      `UPDATE restock_orders
        SET total = (SELECT COALESCE(SUM(quantity * prix_unitaire),0) FROM commande_items WHERE commande_id = $1)
        WHERE id = $1`,
       [req.params.id]
@@ -234,17 +222,18 @@ router.post('/:id/items', verify, async (req, res) => {
 router.delete('/:id/items/:itemId', verify, async (req, res) => {
   try {
     const { rows: cmd } = await db.query(
-      'SELECT id FROM commandes WHERE id = $1 AND user_id = $2',
+      'SELECT id FROM restock_orders WHERE id = $1 AND user_id = $2',
       [req.params.id, req.user.id]
     );
     if (!cmd.length) return res.status(404).json({ error: 'Commande introuvable' });
 
-    await db.query('DELETE FROM commande_items WHERE id = $1 AND commande_id = $2',
-      [req.params.itemId, req.params.id]);
-
-    // Recalculer total
     await db.query(
-      `UPDATE commandes
+      'DELETE FROM commande_items WHERE id = $1 AND commande_id = $2',
+      [req.params.itemId, req.params.id]
+    );
+
+    await db.query(
+      `UPDATE restock_orders
        SET total = (SELECT COALESCE(SUM(quantity * prix_unitaire),0) FROM commande_items WHERE commande_id = $1)
        WHERE id = $1`,
       [req.params.id]
