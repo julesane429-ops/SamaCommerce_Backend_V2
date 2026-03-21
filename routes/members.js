@@ -58,8 +58,8 @@ router.post('/invite', verifyToken, async (req, res) => {
 
     // Permissions par défaut selon le rôle
     const defaultPerms = role === 'gerant'
-      ? { vente:true, stock:true, rapports:true, credits:true, clients:true, fournisseurs:true, commandes:true, livraisons:true }
-      : { vente:true, stock:false, rapports:false, credits:false, clients:false, fournisseurs:false, commandes:false, livraisons:false };
+      ? { vente:true, stock:true, categories:true, rapports:true, caisse:true, credits:true, clients:true, fournisseurs:true, commandes:true, livraisons:true }
+      : { vente:true, stock:false, categories:false, rapports:false, caisse:false, credits:false, clients:false, fournisseurs:false, commandes:false, livraisons:false };
 
     const finalPerms = permissions || defaultPerms;
     const token = crypto.randomBytes(32).toString('hex');
