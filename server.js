@@ -107,7 +107,7 @@ cron.schedule('0 0 * * *', async () => {
     const in7 = await pool.query(`
       SELECT id, username, company_name, phone, expiration
       FROM users
-      WHERE plan = 'Premium'
+      WHERE plan IN ('Starter','Pro','Business','Enterprise')
         AND upgrade_status = 'validé'
         AND expiration::date = CURRENT_DATE + INTERVAL '7 days'
     `);
@@ -126,7 +126,7 @@ cron.schedule('0 0 * * *', async () => {
     const in3 = await pool.query(`
       SELECT id, username, company_name, phone, expiration
       FROM users
-      WHERE plan = 'Premium'
+      WHERE plan IN ('Starter','Pro','Business','Enterprise')
         AND upgrade_status = 'validé'
         AND expiration::date = CURRENT_DATE + INTERVAL '3 days'
     `);
@@ -145,7 +145,7 @@ cron.schedule('0 0 * * *', async () => {
     const expired = await pool.query(`
       SELECT id, username, company_name, phone, expiration
       FROM users
-      WHERE plan = 'Premium'
+      WHERE plan IN ('Starter','Pro','Business','Enterprise')
         AND upgrade_status = 'validé'
         AND expiration::date < CURRENT_DATE
     `);
