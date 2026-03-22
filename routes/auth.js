@@ -191,7 +191,7 @@ function isAdmin(req, res, next) {
 // ==========================
 //   Liste des utilisateurs
 // ==========================
-router.get("/users", authenticateToken, async (req, res) => {
+router.get("/users", authenticateToken, isAdmin, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT id, username, company_name, phone, role, status, plan,
@@ -330,17 +330,18 @@ router.get("/me/stats", authenticateToken, async (req, res) => {
 //   Upgrade Premium
 // ==========================
 router.put("/upgrade", authenticateToken, async (req, res) => {
-  const { phone, payment_method, amount, expiration } = req.body;
-  if (!phone || !payment_method || !amount || !expiration) {
+  const { phone, payment_method, amount } = req.body;
+  if (!phone || !payment_method || !amount) {
     return res.status(400).json({ error: "Champs manquants" });
   }
   try {
+    // Enregistrer la demande en attente — l'expiration est fixée par l'admin à la validation
     const result = await pool.query(
-      `UPDATE users SET phone=$1, plan='Premium', payment_method=$2, amount=$3,
-       expiration=$4, upgrade_status='en attente', payment_status='À jour'
-       WHERE id=$5
+      `UPDATE users SET phone=$1, payment_method=$2, amount=$3,
+       upgrade_status='en attente', payment_status='En attente'
+       WHERE id=$4
        RETURNING id, username, company_name, phone, plan, payment_method, amount, expiration, payment_status, upgrade_status`,
-      [phone, payment_method, amount, expiration, req.user.id]
+      [phone, payment_method, amount, req.user.id]
     );
     if (!result.rows.length) return res.status(404).json({ error: "Utilisateur introuvable" });
     res.json({ message: "Demande d'upgrade enregistrée", user: result.rows[0] });
@@ -352,9 +353,18 @@ router.put("/upgrade", authenticateToken, async (req, res) => {
 
 router.put('/upgrade/:userId/approve', authenticateToken, isAdmin, async (req, res) => {
   try {
+    // Durée configurable via req.body.months (défaut 1 mois)
+    const months = parseInt(req.body.months || '1');
+    const expiration = new Date();
+    expiration.setMonth(expiration.getMonth() + months);
+
     const result = await pool.query(
-      "UPDATE users SET plan='Premium', upgrade_status='validé' WHERE id=$1 RETURNING id, username, plan, upgrade_status",
-      [req.params.userId]
+      `UPDATE users
+       SET plan='Premium', upgrade_status='validé',
+           expiration=$2, payment_status='À jour'
+       WHERE id=$1
+       RETURNING id, username, plan, upgrade_status, expiration`,
+      [req.params.userId, expiration.toISOString().split('T')[0]]
     );
     if (!result.rows.length) return res.status(404).json({ error: "Utilisateur introuvable" });
     res.json({ message: "Upgrade validé", user: result.rows[0] });
