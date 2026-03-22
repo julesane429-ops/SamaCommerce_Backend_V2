@@ -9,7 +9,7 @@ const employeeProxy = require('../middleware/employeeProxy');
 const INVITE_TTL_HOURS = 72;
 
 // Permissions disponibles
-const ALL_PERMS = ['vente', 'stock', 'rapports', 'credits', 'clients',
+const ALL_PERMS = ['vente', 'stock', 'categories', 'rapports', 'caisse', 'credits', 'clients',
                    'fournisseurs', 'commandes', 'livraisons'];
 
 // ── GET /members ── Liste des membres de ma boutique
@@ -170,7 +170,7 @@ router.patch('/:id', verifyToken, async (req, res) => {
           role        = COALESCE($2, role)
       WHERE id = $3 AND boutique_id = $4
       RETURNING *
-    `, [permissions ? JSON.stringify(permissions) : null, role || null,
+    `, [permissions || null, role || null,
         req.params.id, req.user.id]);
 
     if (!rows.length) return res.status(404).json({ error: 'Membre introuvable' });
