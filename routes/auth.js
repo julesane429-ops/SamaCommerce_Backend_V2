@@ -380,57 +380,59 @@ router.put("/upgrade", authenticateToken, async (req, res) => {
 
 router.put('/upgrade/:userId/approve', authenticateToken, isAdmin, async (req, res) => {
   try {
-    const months = parseInt(req.body.months || '1');
+    const userId = req.params.userId;
+    const months = Math.max(1, parseInt(req.body.months) || 1);
 
-    // Déterminer le plan : req.body.plan prioritaire, sinon lire le plan demandé en DB
-    let planName = (req.body.plan && PAID_PLANS.includes(req.body.plan.trim()))
-      ? req.body.plan.trim()
+    // 1. Déterminer le plan à activer
+    const VALID = ['Starter', 'Pro', 'Business', 'Enterprise'];
+    let planName = (req.body.plan && VALID.includes(String(req.body.plan).trim()))
+      ? String(req.body.plan).trim()
       : null;
 
     if (!planName) {
-      // Lire le plan stocké lors de la demande (PUT /upgrade)
-      const dbRow = await pool.query('SELECT plan FROM users WHERE id = $1', [req.params.userId]);
-      const dbPlan = dbRow.rows[0]?.plan;
-      planName = (dbPlan && PAID_PLANS.includes(dbPlan)) ? dbPlan : 'Pro';
+      const row = await pool.query('SELECT plan FROM users WHERE id=$1', [userId]);
+      const p   = row.rows[0]?.plan;
+      planName  = (p && VALID.includes(p)) ? p : 'Pro';
     }
 
-    const expiration = new Date();
-    expiration.setMonth(expiration.getMonth() + months);
+    // 2. Calculer la date d'expiration
+    const exp = new Date();
+    exp.setMonth(exp.getMonth() + months);
+    const expStr = exp.toISOString().split('T')[0];
 
-    const result = await pool.query(
+    // 3. Mettre à jour la DB
+    const { rows } = await pool.query(
       `UPDATE users
-       SET plan=$1, upgrade_status='validé',
-           expiration=$3, payment_status='À jour'
-       WHERE id=$2
-       RETURNING id, username, plan, upgrade_status, expiration`,
-      [planName, req.params.userId, expiration.toISOString().split('T')[0]]
+         SET plan=$1, upgrade_status='validé', expiration=$2, payment_status='À jour'
+       WHERE id=$3
+       RETURNING id, username, company_name, plan, upgrade_status, expiration`,
+      [planName, expStr, userId]
     );
-    if (!result.rows.length) return res.status(404).json({ error: "Utilisateur introuvable" });
+    if (!rows.length) return res.status(404).json({ error: 'Utilisateur introuvable' });
 
-    // Invalider le cache plan pour que le middleware recharge immédiatement
-    invalidatePlanCache(parseInt(req.params.userId));
+    // 4. Invalider le cache plan
+    try { invalidatePlanCache(parseInt(userId)); } catch {}
 
-    // Envoyer l'email de bienvenue
-    const u = result.rows[0];
-    try {
-      const { subject, html } = emailBienvenuePremium(u, u.expiration);
-      await sendEmail(u.username, subject, html);
-    } catch (mailErr) {
-      console.error('Email bienvenue:', mailErr.message);
-    }
+    // 5. Email de bienvenue (non-bloquant)
+    const u = rows[0];
+    sendEmail(u.username,
+      `✅ Votre abonnement ${planName} est actif — Sama Commerce`,
+      `<p>Bonjour ${u.company_name || u.username},</p><p>Votre plan <strong>${planName}</strong> est maintenant actif jusqu'au ${new Date(expStr).toLocaleDateString('fr-FR')}. Profitez de toutes les fonctionnalités !</p>`
+    ).catch(() => {});
 
-    // Envoyer une push notification à l'utilisateur (non-bloquant)
+    // 6. Push notification (non-bloquant)
     if (_sendPushToUser) {
-      const planEmoji = { Starter:'🌱', Pro:'⭐', Business:'🏆', Enterprise:'🚀' };
-      _sendPushToUser(parseInt(req.params.userId), {
+      _sendPushToUser(parseInt(userId), {
         title: '🎉 Abonnement activé !',
-        body:  `Votre plan ${planEmoji[planName] || ''} ${planName} est maintenant actif.`,
-        url:   '/',
+        body:  `Plan ${planName} actif jusqu'au ${new Date(expStr).toLocaleDateString('fr-FR')}.`,
       }).catch(() => {});
     }
 
-    res.json({ message: `Plan ${planName} activé`, user: u });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    return res.json({ message: `Plan ${planName} activé`, user: u });
+  } catch (err) {
+    console.error('❌ approve:', err.message, err.stack);
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 router.put('/upgrade/:userId/reject', authenticateToken, isAdmin, async (req, res) => {
