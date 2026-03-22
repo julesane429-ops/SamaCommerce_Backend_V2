@@ -1,38 +1,37 @@
 // middleware/employeeProxy.js
 // ─────────────────────────────────────────────────────────────
-// Si l'appelant est un employé (boutique_member accepté),
-// remplace req.user.id par l'id du propriétaire de la boutique
-// pour que toutes les requêtes SQL retournent les bonnes données.
+// Si l'appelant est un employé (boutique_member accepté) :
+//   - req.user.id          = owner_user_id  (pour les requêtes WHERE user_id)
+//   - req.user.boutique_id = ref_boutique_id (pour les requêtes WHERE boutique_id)
+//   - req.user.isEmployee  = true
+//   - req.user.realId      = employee user_id réel
+//   - req.user.permissions = ses permissions
 //
-// Usage dans server.js (AVANT les routes) :
-//   const employeeProxy = require('./middleware/employeeProxy');
-//   app.use(employeeProxy);
+// ✅ Correction multi-boutique : on injecte aussi ref_boutique_id
+//    pour que l'employé ne voie que les données de SA boutique,
+//    pas toutes les boutiques de l'owner.
 // ─────────────────────────────────────────────────────────────
 
 const db = require('../db');
 
-// Cache simple en mémoire pour éviter une requête DB à chaque appel
-// TTL : 5 minutes (les permissions changent rarement)
-const cache = new Map(); // key: member_user_id → { boutiqueId, permissions, expiresAt }
-const CACHE_TTL_MS = 5 * 60 * 1000;
+const cache      = new Map();
+const CACHE_TTL  = 5 * 60 * 1000;
 
 async function employeeProxy(req, res, next) {
-  // Pas de user décodé = pas encore passé par verifyToken
   if (!req.user?.id) return next();
 
-  // Les routes /members gèrent elles-mêmes realId vs boutiqueId
-  // Utiliser originalUrl (chemin complet) car req.path peut être relatif selon le contexte
   const fullPath = req.originalUrl || req.path || '';
   if (fullPath.includes('/members')) return next();
   if (fullPath.includes('/auth'))    return next();
 
   const userId = req.user.id;
 
-  // Vérifier le cache
+  // ── Cache ──
   const cached = cache.get(userId);
   if (cached && cached.expiresAt > Date.now()) {
-    if (cached.boutiqueId) {
-      req.user.id          = cached.boutiqueId;
+    if (cached.ownerUserId) {
+      req.user.id          = cached.ownerUserId;
+      req.user.boutique_id = cached.refBoutiqueId;
       req.user.isEmployee  = true;
       req.user.realId      = userId;
       req.user.permissions = cached.permissions;
@@ -41,48 +40,59 @@ async function employeeProxy(req, res, next) {
   }
 
   try {
-    const { rows } = await db.query(
-      `SELECT bm.boutique_id, bm.permissions, bm.role
-       FROM boutique_members bm
-       WHERE bm.member_id = $1
-         AND bm.status    = 'accepted'
-       LIMIT 1`,
-      [userId]
-    );
+    const { rows } = await db.query(`
+      SELECT bm.boutique_id  AS owner_user_id_legacy,
+             bm.owner_user_id,
+             bm.ref_boutique_id,
+             bm.permissions,
+             bm.role
+      FROM boutique_members bm
+      WHERE bm.member_id = $1
+        AND bm.status    = 'accepted'
+      LIMIT 1
+    `, [userId]);
 
     if (rows.length === 0) {
-      // Pas un employé — cacher ce résultat aussi pour éviter la requête répétée
-      cache.set(userId, { boutiqueId: null, permissions: null, expiresAt: Date.now() + CACHE_TTL_MS });
+      cache.set(userId, {
+        ownerUserId:  null,
+        refBoutiqueId: null,
+        permissions:  null,
+        expiresAt:    Date.now() + CACHE_TTL
+      });
       return next();
     }
 
-    const { boutique_id, role } = rows[0];
-    // Normaliser permissions en objet (JSONB → objet, TEXT → string à parser)
-    let permissions = rows[0].permissions;
+    const row = rows[0];
+
+    // ✅ owner_user_id est la source de vérité depuis la migration.
+    //    Fallback sur boutique_id (ancienne colonne = user_id) pour rétrocompat.
+    const ownerUserId   = row.owner_user_id || row.owner_user_id_legacy;
+    const refBoutiqueId = row.ref_boutique_id || null;
+
+    let permissions = row.permissions;
     if (typeof permissions === 'string') {
       try { permissions = JSON.parse(permissions); } catch { permissions = {}; }
     }
     permissions = permissions || {};
 
-    // Stocker en cache
     cache.set(userId, {
-      boutiqueId:  boutique_id,
+      ownerUserId,
+      refBoutiqueId,
       permissions,
-      role,
-      expiresAt:   Date.now() + CACHE_TTL_MS,
+      role:      row.role,
+      expiresAt: Date.now() + CACHE_TTL,
     });
 
-    // Remplacer l'id pour que toutes les requêtes SQL ciblent la boutique
-    req.user.id          = boutique_id;
+    // ── Injection dans req.user ──
+    req.user.id          = ownerUserId;     // owner → toutes les requêtes user_id trouvent les données
+    req.user.boutique_id = refBoutiqueId;   // boutique spécifique → filtre WHERE boutique_id
     req.user.isEmployee  = true;
-    req.user.realId      = userId;   // on garde l'id réel pour les logs
+    req.user.realId      = userId;
     req.user.permissions = permissions;
-    req.user.role        = role;
+    req.user.role        = row.role;
 
   } catch (err) {
     console.error('employeeProxy error:', err.message);
-    // Fail-closed : en cas d'erreur DB on bloque plutôt que de laisser passer
-    // (évite qu'un employé accède à ses propres données vides au lieu de la boutique)
     return res.status(503).json({
       error: 'Service temporairement indisponible. Réessayez dans quelques instants.'
     });
@@ -91,9 +101,6 @@ async function employeeProxy(req, res, next) {
   next();
 }
 
-// Invalider le cache quand les permissions changent (appelé depuis members.js)
-employeeProxy.invalidate = (memberUserId) => {
-  cache.delete(memberUserId);
-};
+employeeProxy.invalidate = (memberUserId) => cache.delete(memberUserId);
 
 module.exports = employeeProxy;
