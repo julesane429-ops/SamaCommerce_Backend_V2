@@ -22,7 +22,7 @@ router.get('/today', verifyToken, perm('caisse'), requirePlan('caisse'), async (
         COALESCE(SUM(total) FILTER (WHERE paid=true),0)                                   AS total_encaisse,
         COALESCE(SUM(total),0)                                                             AS total_ca
       FROM sales
-      WHERE user_id = $1
+      WHERE (boutique_id = $1 OR (boutique_id IS NULL AND user_id = $1))
         AND DATE(created_at) = CURRENT_DATE
     `, [req.user.id]);
  
@@ -30,7 +30,7 @@ router.get('/today', verifyToken, perm('caisse'), requirePlan('caisse'), async (
     const { rows: retRows } = await db.query(`
       SELECT COALESCE(SUM(refund_amount),0) AS total_retours, COUNT(*)::int AS nb_retours
       FROM returns
-      WHERE user_id = $1 AND DATE(created_at) = CURRENT_DATE
+      WHERE (boutique_id = $1 OR (boutique_id IS NULL AND user_id = $1)) AND DATE(created_at) = CURRENT_DATE
     `, [req.user.id]);
  
     const data = rows[0];
@@ -57,11 +57,11 @@ router.post('/close', verifyToken, perm('caisse'), requirePlan('caisse'), async 
         COALESCE(SUM(total) FILTER (WHERE paid=true),0) AS total_encaisse,
         COUNT(*)::int AS nb_ventes
       FROM sales
-      WHERE user_id = $1 AND DATE(created_at) = CURRENT_DATE
+      WHERE (boutique_id = $1 OR (boutique_id IS NULL AND user_id = $1)) AND DATE(created_at) = CURRENT_DATE
     `, [req.user.id]);
  
     const { rows: ret } = await db.query(
-      "SELECT COALESCE(SUM(refund_amount),0) AS total FROM returns WHERE user_id = $1 AND DATE(created_at) = CURRENT_DATE",
+      "SELECT COALESCE(SUM(refund_amount),0) AS total FROM returns WHERE (boutique_id = $1 OR (boutique_id IS NULL AND user_id = $1)) AND DATE(created_at) = CURRENT_DATE",
       [req.user.id]
     );
  
@@ -71,13 +71,13 @@ router.post('/close', verifyToken, perm('caisse'), requirePlan('caisse'), async 
  
     const result = await db.query(`
       INSERT INTO caisse_closings
-        (user_id, total_especes, total_wave, total_orange, total_credits, total_retours, total_net, nb_ventes, notes)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        (user_id, boutique_id, total_especes, total_wave, total_orange, total_credits, total_retours, total_net, nb_ventes, notes)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
       ON CONFLICT (user_id, date) DO UPDATE SET
         total_especes=$2, total_wave=$3, total_orange=$4, total_credits=$5,
         total_retours=$6, total_net=$7, nb_ventes=$8, notes=$9
       RETURNING *
-    `, [req.user.id, d.especes, d.wave, d.orange, d.credits, ret[0].total, net, d.nb_ventes, notes]);
+    `, [req.user.id, req.user.boutique_id||null, d.especes, d.wave, d.orange, d.credits, ret[0].total, net, d.nb_ventes, notes]);
  
     res.json(result.rows[0]);
   } catch (err) {
@@ -90,7 +90,7 @@ router.post('/close', verifyToken, perm('caisse'), requirePlan('caisse'), async 
 router.get('/history', verifyToken, perm('caisse'), requirePlan('caisse'), async (req, res) => {
   try {
     const { rows } = await db.query(
-      'SELECT * FROM caisse_closings WHERE user_id = $1 ORDER BY date DESC LIMIT 30',
+      'SELECT * FROM caisse_closings WHERE (boutique_id = $1 OR (boutique_id IS NULL AND user_id = $1)) ORDER BY date DESC LIMIT 30',
       [req.user.id]
     );
     res.json(rows);
@@ -119,7 +119,7 @@ router.get('/weekly', verifyToken, perm('caisse'), requirePlan('caisse'), async 
         COALESCE(SUM(total) FILTER (WHERE payment_method='orange'  AND paid=true), 0) AS orange,
         COALESCE(SUM(total) FILTER (WHERE paid = false), 0)             AS credits
       FROM sales
-      WHERE user_id = $1
+      WHERE (boutique_id = $1 OR (boutique_id IS NULL AND user_id = $1))
         AND created_at >= NOW() - INTERVAL '7 days'
       GROUP BY DATE(created_at AT TIME ZONE 'UTC')
       ORDER BY date ASC
