@@ -3,6 +3,7 @@ const express    = require('express');
 const router     = express.Router();
 const db         = require('../db');
 const verifyToken = require('../middleware/auth');
+const perm        = require('../middleware/checkPermission');
 
 router.get('/', verifyToken, async (req, res) => {
   try {
@@ -41,7 +42,7 @@ router.get('/:id', verifyToken, async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Erreur serveur' }); }
 });
 
-router.post('/', verifyToken, async (req, res) => {
+router.post('/', verifyToken, perm('fournisseurs'), async (req, res) => {
   const { name, phone, email, address, notes } = req.body;
   if (!name) return res.status(400).json({ error: 'Nom requis' });
   try {
@@ -53,7 +54,7 @@ router.post('/', verifyToken, async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Erreur serveur' }); }
 });
 
-router.patch('/:id', verifyToken, async (req, res) => {
+router.patch('/:id', verifyToken, perm('fournisseurs'), async (req, res) => {
   const allowed = ['name','phone','email','address','notes'];
   const fields = [], values = [];
   let i = 1;
@@ -69,7 +70,7 @@ router.patch('/:id', verifyToken, async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Erreur serveur' }); }
 });
 
-router.delete('/:id', verifyToken, async (req, res) => {
+router.delete('/:id', verifyToken, perm('fournisseurs'), async (req, res) => {
   try {
     const { rowCount } = await db.query('DELETE FROM fournisseurs WHERE id=$1 AND user_id=$2', [req.params.id, req.user.id]);
     if (!rowCount) return res.status(404).json({ error: 'Fournisseur introuvable' });
@@ -78,7 +79,7 @@ router.delete('/:id', verifyToken, async (req, res) => {
 });
 
 // Lier un produit
-router.post('/:id/produits', verifyToken, async (req, res) => {
+router.post('/:id/produits', verifyToken, perm('fournisseurs'), async (req, res) => {
   const { product_id, prix_achat_fournisseur, delai_livraison_jours } = req.body;
   if (!product_id) return res.status(400).json({ error: 'product_id requis' });
   try {
@@ -93,7 +94,7 @@ router.post('/:id/produits', verifyToken, async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Erreur serveur' }); }
 });
 
-router.delete('/:id/produits/:pid', verifyToken, async (req, res) => {
+router.delete('/:id/produits/:pid', verifyToken, perm('fournisseurs'), async (req, res) => {
   try {
     await db.query('DELETE FROM supplier_products WHERE fournisseur_id=$1 AND product_id=$2', [req.params.id, req.params.pid]);
     res.json({ message: 'Produit délié' });
