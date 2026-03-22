@@ -90,8 +90,8 @@ router.post('/', verify, perm('clients'), async (req, res) => {
     }
 
     const { rows } = await db.query(
-      `INSERT INTO clients (user_id, name, phone, email, address, notes)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      `INSERT INTO clients (user_id, boutique_id, name, phone, email, address, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
       [req.user.id, name, phone||null, email||null, address||null, notes||null]
     );
 
