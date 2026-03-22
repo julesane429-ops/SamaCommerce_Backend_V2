@@ -29,7 +29,7 @@ router.get('/', verifyToken, async (req, res) => {
 });
 
 // ✅ POST nouvelle vente (gère aussi le crédit)
-router.post('/', verifyToken, async (req, res) => {
+router.post('/', verifyToken, perm('vente'), async (req, res) => {
   const { product_id, quantity, payment_method, client_name, client_phone, due_date } = req.body;
 
   try {
@@ -46,22 +46,23 @@ router.post('/', verifyToken, async (req, res) => {
     // ✅ payé immédiatement sauf si crédit
     const paid = (payment_method === "credit") ? false : true;
 
+    const saleResult = await db.query(
+      `INSERT INTO sales
+        (product_id, quantity, total, payment_method, user_id, client_name, client_phone, due_date, paid)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       RETURNING *`,
+      [product_id, quantity, total, payment_method, req.user.id,
+       client_name || null, client_phone || null, due_date || null, paid]
+    );
+
+    const newSale = saleResult.rows[0];
+
     await db.query(
-  `INSERT INTO sales 
-    (product_id, quantity, total, payment_method, user_id, client_name, client_phone, due_date, paid) 
-   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-   RETURNING *`,
-  [product_id, quantity, total, payment_method, req.user.id, client_name || null, client_phone || null, due_date || null, paid]
-);
+      'UPDATE products SET stock = stock - $1 WHERE id = $2 AND user_id = $3',
+      [quantity, product_id, req.user.id]
+    );
 
-const newSale = result.rows[0];
-
-await db.query(
-  'UPDATE products SET stock = stock - $1 WHERE id = $2 AND user_id = $3',
-  [quantity, product_id, req.user.id]
-);
-
-res.status(201).json(newSale);  // ✅ renvoie la vente complète
+    res.status(201).json(newSale);
 
   } catch (err) {
     console.error("Erreur POST /sales :", err.message);
@@ -139,18 +140,35 @@ router.patch('/:id', verifyToken, async (req, res) => {
 
 
 
-// ✅ DELETE annuler une vente
+// ✅ DELETE annuler une vente + recréditer le stock
 router.delete('/:id', verifyToken, async (req, res) => {
   try {
-    const result = await db.query(
-      'DELETE FROM sales WHERE id = $1 AND user_id = $2 RETURNING *',
+    // Récupérer la vente avant suppression pour recréditer le stock
+    const { rows } = await db.query(
+      'SELECT * FROM sales WHERE id = $1 AND user_id = $2',
       [req.params.id, req.user.id]
     );
-    if (result.rowCount === 0) return res.status(404).json({ error: 'Vente introuvable' });
+    if (!rows.length) return res.status(404).json({ error: 'Vente introuvable' });
 
-    res.json({ message: 'Vente annulée' });
+    const vente = rows[0];
+
+    // Supprimer la vente
+    await db.query(
+      'DELETE FROM sales WHERE id = $1 AND user_id = $2',
+      [req.params.id, req.user.id]
+    );
+
+    // Recréditer le stock (sauf si retour déjà traité via /returns)
+    if (vente.payment_method !== 'retour') {
+      await db.query(
+        'UPDATE products SET stock = stock + $1 WHERE id = $2 AND user_id = $3',
+        [vente.quantity, vente.product_id, req.user.id]
+      );
+    }
+
+    res.json({ message: 'Vente annulée', restored_qty: vente.quantity });
   } catch (err) {
-    console.error("Erreur DELETE /sales/:id :", err.message);
+    console.error('Erreur DELETE /sales/:id :', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
