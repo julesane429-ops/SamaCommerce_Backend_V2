@@ -6,6 +6,7 @@ const express = require('express');
 const router  = express.Router();
 const db      = require('../db');
 const verify  = require('../middleware/auth');
+const requirePlan = require('../middleware/checkSubscription');
 
 // ─── GET /commandes ─── Liste des commandes fournisseurs
 router.get('/', verify, async (req, res) => {
@@ -64,7 +65,7 @@ router.get('/:id', verify, async (req, res) => {
 });
 
 // ─── POST /commandes ─── Créer une commande avec ses lignes
-router.post('/', verify, async (req, res) => {
+router.post('/', verify, requirePlan('commandes'), async (req, res) => {
   const client = await db.connect();
   try {
     await client.query('BEGIN');
@@ -105,7 +106,7 @@ router.post('/', verify, async (req, res) => {
 });
 
 // ─── PATCH /commandes/:id ─── Modifier statut / notes
-router.patch('/:id', verify, async (req, res) => {
+router.patch('/:id', verify, requirePlan('commandes'), async (req, res) => {
   try {
     const allowed = ['status', 'notes', 'expected_date', 'fournisseur_id'];
     const set = [], values = [];
@@ -130,7 +131,7 @@ router.patch('/:id', verify, async (req, res) => {
 });
 
 // ─── PATCH /commandes/:id/recevoir ─── Marquer reçue + incrémenter le stock
-router.patch('/:id/recevoir', verify, async (req, res) => {
+router.patch('/:id/recevoir', verify, requirePlan('commandes'), async (req, res) => {
   const client = await db.connect();
   try {
     await client.query('BEGIN');
@@ -174,7 +175,7 @@ router.patch('/:id/recevoir', verify, async (req, res) => {
 });
 
 // ─── DELETE /commandes/:id ───
-router.delete('/:id', verify, async (req, res) => {
+router.delete('/:id', verify, requirePlan('commandes'), async (req, res) => {
   try {
     const { rows } = await db.query(
       'DELETE FROM restock_orders WHERE id = $1 AND user_id = $2 RETURNING *',
@@ -189,7 +190,7 @@ router.delete('/:id', verify, async (req, res) => {
 });
 
 // ─── POST /commandes/:id/items ─── Ajouter une ligne
-router.post('/:id/items', verify, async (req, res) => {
+router.post('/:id/items', verify, requirePlan('commandes'), async (req, res) => {
   try {
     const { rows: cmd } = await db.query(
       'SELECT id FROM restock_orders WHERE id = $1 AND user_id = $2',
@@ -219,7 +220,7 @@ router.post('/:id/items', verify, async (req, res) => {
 });
 
 // ─── DELETE /commandes/:id/items/:itemId ─── Supprimer une ligne
-router.delete('/:id/items/:itemId', verify, async (req, res) => {
+router.delete('/:id/items/:itemId', verify, requirePlan('commandes'), async (req, res) => {
   try {
     const { rows: cmd } = await db.query(
       'SELECT id FROM restock_orders WHERE id = $1 AND user_id = $2',
