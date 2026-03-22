@@ -1,21 +1,21 @@
 // routes/boutiques.js — Gestion multi-boutiques
-const express    = require('express');
-const router     = express.Router();
-const db         = require('../db');
+const express     = require('express');
+const router      = express.Router();
+const db          = require('../db');
 const verifyToken = require('../middleware/auth');
 const requirePlan = require('../middleware/checkSubscription');
 const { getBoutiquesLimit } = require('../middleware/planConfig');
-const { invalidate } = require('../middleware/boutiqueContext');
+const { invalidate }        = require('../middleware/boutiqueContext');
 
-// ── GET /boutiques ── Lister ses boutiques avec stats ─────────────
+// ── GET /boutiques ── Lister ses boutiques
 router.get('/', verifyToken, async (req, res) => {
   try {
     const { rows } = await db.query(
       `SELECT b.*,
-        (SELECT COUNT(*) FROM products  WHERE boutique_id = b.id)::int AS nb_produits,
-        (SELECT COUNT(*) FROM sales     WHERE boutique_id = b.id)::int AS nb_ventes,
+        (SELECT COUNT(*) FROM products WHERE boutique_id = b.id)::int AS nb_produits,
+        (SELECT COUNT(*) FROM sales    WHERE boutique_id = b.id)::int AS nb_ventes,
         (SELECT COUNT(*) FROM boutique_members
-         WHERE ref_boutique_id = b.id AND status = 'accepted')::int   AS nb_membres
+         WHERE ref_boutique_id = b.id AND status = 'accepted')::int AS nb_membres
        FROM boutiques b
        WHERE b.owner_id = $1
        ORDER BY b.is_primary DESC, b.created_at ASC`,
@@ -28,9 +28,7 @@ router.get('/', verifyToken, async (req, res) => {
   }
 });
 
-// ── POST /boutiques ── Créer une boutique ─────────────────────────
-// Accessible uniquement avec multi_boutique (plan Enterprise)
-// ✅ Pas de limite de nombre pour Enterprise
+// ── POST /boutiques ── Créer une nouvelle boutique
 router.post('/', verifyToken, requirePlan('multi_boutique'), async (req, res) => {
   const { name, phone, address, emoji } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: 'Le nom est requis' });
@@ -43,8 +41,8 @@ router.post('/', verifyToken, requirePlan('multi_boutique'), async (req, res) =>
     const plan  = planRow.rows[0]?.plan || 'Free';
     const limit = getBoutiquesLimit(plan);
 
-    // ✅ Infinity = pas de vérification de limite
-    if (isFinite(limit)) {
+    // ✅ Infinity = pas de limite pour Enterprise
+    if (limit !== Infinity) {
       const countRow = await db.query(
         'SELECT COUNT(*)::int AS cnt FROM boutiques WHERE owner_id = $1',
         [req.user.id]
@@ -73,7 +71,7 @@ router.post('/', verifyToken, requirePlan('multi_boutique'), async (req, res) =>
   }
 });
 
-// ── PATCH /boutiques/:id ── Modifier une boutique ─────────────────
+// ── PATCH /boutiques/:id ── Modifier une boutique
 router.patch('/:id', verifyToken, async (req, res) => {
   const { name, phone, address, emoji } = req.body;
   try {
@@ -108,7 +106,7 @@ router.patch('/:id', verifyToken, async (req, res) => {
   }
 });
 
-// ── DELETE /boutiques/:id ── Supprimer une boutique secondaire ─────
+// ── DELETE /boutiques/:id ── Supprimer une boutique (pas la primaire)
 router.delete('/:id', verifyToken, async (req, res) => {
   try {
     const { rows } = await db.query(
@@ -120,20 +118,6 @@ router.delete('/:id', verifyToken, async (req, res) => {
       return res.status(400).json({ error: 'Impossible de supprimer la boutique principale' });
     }
 
-    // Réassigner les membres de cette boutique à la boutique primaire
-    const primary = await db.query(
-      'SELECT id FROM boutiques WHERE owner_id = $1 AND is_primary = true LIMIT 1',
-      [req.user.id]
-    );
-    if (primary.rows.length) {
-      await db.query(
-        `UPDATE boutique_members
-         SET ref_boutique_id = $1
-         WHERE ref_boutique_id = $2`,
-        [primary.rows[0].id, req.params.id]
-      );
-    }
-
     await db.query('DELETE FROM boutiques WHERE id = $1', [req.params.id]);
     invalidate(req.user.id);
     res.json({ message: 'Boutique supprimée' });
@@ -143,7 +127,7 @@ router.delete('/:id', verifyToken, async (req, res) => {
   }
 });
 
-// ── GET /boutiques/:id/stats ── Statistiques détaillées d'une boutique
+// ── GET /boutiques/:id/stats ── Statistiques d'une boutique
 router.get('/:id/stats', verifyToken, async (req, res) => {
   try {
     const boutiqueId = parseInt(req.params.id);
@@ -155,36 +139,50 @@ router.get('/:id/stats', verifyToken, async (req, res) => {
     if (!own.rows.length) return res.status(403).json({ error: 'Accès refusé' });
 
     const [produits, ventes, ca, membres] = await Promise.all([
-      db.query(
-        'SELECT COUNT(*)::int AS cnt FROM products WHERE boutique_id = $1 AND deleted_at IS NULL',
-        [boutiqueId]
-      ),
-      db.query(
-        'SELECT COUNT(*)::int AS cnt FROM sales WHERE boutique_id = $1',
-        [boutiqueId]
-      ),
-      db.query(
-        `SELECT COALESCE(SUM(total),0)::numeric AS total
-         FROM sales WHERE boutique_id = $1 AND paid = true`,
-        [boutiqueId]
-      ),
-      db.query(
-        `SELECT COUNT(*)::int AS cnt
-         FROM boutique_members
-         WHERE ref_boutique_id = $1 AND status = 'accepted'`,
-        [boutiqueId]
-      ),
+      db.query('SELECT COUNT(*)::int AS cnt FROM products WHERE boutique_id = $1 AND deleted_at IS NULL', [boutiqueId]),
+      db.query('SELECT COUNT(*)::int AS cnt FROM sales WHERE boutique_id = $1', [boutiqueId]),
+      db.query('SELECT COALESCE(SUM(total),0)::numeric AS total FROM sales WHERE boutique_id = $1 AND paid = true', [boutiqueId]),
+      db.query("SELECT COUNT(*)::int AS cnt FROM boutique_members WHERE ref_boutique_id = $1 AND status = 'accepted'", [boutiqueId]),
     ]);
 
     res.json({
-      boutique_id: boutiqueId,
-      nb_produits: produits.rows[0].cnt,
-      nb_ventes:   ventes.rows[0].cnt,
-      ca_total:    parseFloat(ca.rows[0].total),
-      nb_membres:  membres.rows[0].cnt,
+      boutique_id:  boutiqueId,
+      nb_produits:  produits.rows[0].cnt,
+      nb_ventes:    ventes.rows[0].cnt,
+      ca_total:     parseFloat(ca.rows[0].total),
+      nb_membres:   membres.rows[0].cnt,
     });
   } catch (err) {
     console.error('GET /boutiques/:id/stats:', err.message);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// ── GET /boutiques/:id/members ── Membres d'une boutique spécifique
+router.get('/:id/members', verifyToken, async (req, res) => {
+  try {
+    const boutiqueId = parseInt(req.params.id);
+
+    // Vérifier l'appartenance
+    const own = await db.query(
+      'SELECT id FROM boutiques WHERE id = $1 AND owner_id = $2',
+      [boutiqueId, req.user.id]
+    );
+    if (!own.rows.length) return res.status(403).json({ error: 'Accès refusé' });
+
+    const { rows } = await db.query(`
+      SELECT bm.id, bm.email, bm.role, bm.status, bm.permissions,
+             bm.created_at, bm.accepted_at, bm.invite_expires_at,
+             u.company_name, u.phone
+      FROM boutique_members bm
+      LEFT JOIN users u ON bm.member_id = u.id
+      WHERE bm.ref_boutique_id = $1
+      ORDER BY bm.created_at DESC
+    `, [boutiqueId]);
+
+    res.json(rows);
+  } catch (err) {
+    console.error('GET /boutiques/:id/members:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
