@@ -7,6 +7,9 @@ const { sendEmail, emailBienvenuePremium } = require('../utils/mailer');
 const crypto = require('crypto');
 const { PLANS, PAID_PLANS }    = require('../middleware/planConfig');
 const { invalidatePlanCache }  = require('../middleware/checkSubscription');
+// Push notifications (optionnel — ne bloque pas si non configuré)
+let _sendPushToUser = null;
+try { _sendPushToUser = require('./push').sendPushToUser; } catch { /* push désactivé */ }
 
 // -- Rate limiter inline (max 10 tentatives / IP / 15 min) --
 const _rlMap = new Map();
@@ -416,16 +419,15 @@ router.put('/upgrade/:userId/approve', authenticateToken, isAdmin, async (req, r
       console.error('Email bienvenue:', mailErr.message);
     }
 
-    // Envoyer une push notification à l'utilisateur
-    try {
-      const { sendPushToUser } = require('./push');
-      const planCfg = { Starter:'🌱', Pro:'⭐', Business:'🏆', Enterprise:'🚀' };
-      await sendPushToUser(parseInt(req.params.userId), {
+    // Envoyer une push notification à l'utilisateur (non-bloquant)
+    if (_sendPushToUser) {
+      const planEmoji = { Starter:'🌱', Pro:'⭐', Business:'🏆', Enterprise:'🚀' };
+      _sendPushToUser(parseInt(req.params.userId), {
         title: '🎉 Abonnement activé !',
-        body:  `Votre plan ${planCfg[planName] || ''} ${planName} est maintenant actif.`,
+        body:  `Votre plan ${planEmoji[planName] || ''} ${planName} est maintenant actif.`,
         url:   '/',
-      });
-    } catch { /* push non-bloquant */ }
+      }).catch(() => {});
+    }
 
     res.json({ message: `Plan ${planName} activé`, user: u });
   } catch (err) { res.status(500).json({ error: err.message }); }
