@@ -243,6 +243,23 @@ router.post("/users/:id/reminder", authenticateToken, isAdmin, async (req, res) 
 });
 
 // ==========================
+
+// ── GET /auth/pending ── Demandes Premium en attente (admin)
+router.get("/pending", authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, username, company_name, phone, payment_method, amount, created_at
+       FROM users
+       WHERE upgrade_status = 'en attente'
+       ORDER BY created_at ASC`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error("❌ /auth/pending :", err.message);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 //   /auth/me
 // ==========================
 router.get("/me", authenticateToken, async (req, res) => {
@@ -457,4 +474,16 @@ router.post('/logout', async (req, res) => {
   res.json({ message: 'Déconnecté' });
 });
 
+// ══════════════════════════════════════════════════════════
+// MIDDLEWARE : checkPlan
+// Bloque les comptes dont le plan Premium a expiré en les
+// traitant comme Free. Utilisable sur n'importe quelle route.
+// ══════════════════════════════════════════════════════════
+function checkPlan(req, res, next) {
+  // Les admins et employés passent toujours
+  if (!req.user || req.user.role === 'admin' || req.user.isEmployee) return next();
+  next(); // pour l'instant on laisse passer — à utiliser sur routes Premium-only
+}
+
 module.exports = router;
+module.exports.checkPlan = checkPlan;
