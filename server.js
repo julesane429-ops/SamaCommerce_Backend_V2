@@ -53,8 +53,8 @@ app.use(cors({
 app.options('*', cors());
 app.use(express.json());
 
-// ── Proxy employé : redirige les requêtes des employés vers les données de leur boutique ──
-app.use(employeeProxy);
+// Proxy employé : maintenant intégré dans middleware/auth.js (verifyToken)
+// Supprimé d'ici pour éviter qu'il tourne avant le décodage JWT
 
 // ══════════════════════════════════════
 // ROUTES EXISTANTES
