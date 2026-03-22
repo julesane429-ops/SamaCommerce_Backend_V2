@@ -384,7 +384,18 @@ router.put('/upgrade/:userId/approve', authenticateToken, isAdmin, async (req, r
       [req.params.userId, expiration.toISOString().split('T')[0]]
     );
     if (!result.rows.length) return res.status(404).json({ error: "Utilisateur introuvable" });
-    res.json({ message: "Upgrade validé", user: result.rows[0] });
+
+    // Envoyer l'email de bienvenue Premium
+    const u = result.rows[0];
+    try {
+      const { subject, html } = emailBienvenuePremium(u, u.expiration);
+      await sendEmail(u.username, subject, html);
+    } catch (mailErr) {
+      console.error('Email bienvenue Premium:', mailErr.message);
+      // L'email est non-bloquant — on répond quand même
+    }
+
+    res.json({ message: "Upgrade validé", user: u });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
