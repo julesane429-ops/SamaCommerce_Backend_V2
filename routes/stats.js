@@ -1,27 +1,37 @@
-const express = require('express');
-const router = express.Router();
-const db = require('../db');
+const express     = require('express');
+const router      = express.Router();
+const db          = require('../db');
 const verifyToken = require('../middleware/auth');
-const perm           = require('../middleware/checkPermission');
-const requirePlan    = require('../middleware/checkSubscription');
+const perm        = require('../middleware/checkPermission');
+const requirePlan = require('../middleware/checkSubscription');
+
+// Helper réutilisable
+function boutique(req, alias = 's') {
+  const p = alias ? `${alias}.` : '';
+  return {
+    sql:    `(${p}boutique_id = $1 OR (${p}boutique_id IS NULL AND ${p}user_id = $2))`,
+    params: [req.user.boutique_id, req.user.id],
+  };
+}
 
 // Ventes par catégorie
 router.get('/ventes-par-categorie', verifyToken, perm('rapports'), requirePlan('rapports'), async (req, res) => {
   try {
+    const { sql, params } = boutique(req);
     const { rows } = await db.query(`
       SELECT c.name AS categorie,
-             SUM(s.quantity) AS total_quantite,
-             SUM(s.quantity * p.price) AS total_montant
+             SUM(s.quantity)            AS total_quantite,
+             SUM(s.quantity * p.price)  AS total_montant
       FROM sales s
-      JOIN products p ON s.product_id = p.id
+      JOIN products   p ON s.product_id  = p.id
       JOIN categories c ON p.category_id = c.id
-      WHERE s.user_id = $1
+      WHERE ${sql}
       GROUP BY c.name
       ORDER BY total_quantite DESC
-    `, [req.user.boutique_id || req.user.id]);
+    `, params);
     res.json(rows);
   } catch (err) {
-    console.error(err);
+    console.error('GET /stats/ventes-par-categorie:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
@@ -29,19 +39,20 @@ router.get('/ventes-par-categorie', verifyToken, perm('rapports'), requirePlan('
 // Ventes par jour
 router.get('/ventes-par-jour', verifyToken, perm('rapports'), async (req, res) => {
   try {
+    const { sql, params } = boutique(req);
     const { rows } = await db.query(`
-      SELECT DATE(s.created_at) AS date,
-             SUM(s.quantity) AS total_quantite,
-             SUM(s.quantity * p.price) AS total_montant
+      SELECT DATE(s.created_at)         AS date,
+             SUM(s.quantity)            AS total_quantite,
+             SUM(s.quantity * p.price)  AS total_montant
       FROM sales s
       JOIN products p ON s.product_id = p.id
-      WHERE s.user_id = $1
+      WHERE ${sql}
       GROUP BY DATE(s.created_at)
       ORDER BY date ASC
-    `, [req.user.boutique_id || req.user.id]);
+    `, params);
     res.json(rows);
   } catch (err) {
-    console.error(err);
+    console.error('GET /stats/ventes-par-jour:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
@@ -49,18 +60,19 @@ router.get('/ventes-par-jour', verifyToken, perm('rapports'), async (req, res) =
 // Répartition paiements
 router.get('/paiements', verifyToken, async (req, res) => {
   try {
+    const { sql, params } = boutique(req);
     const { rows } = await db.query(`
       SELECT s.payment_method,
-             COUNT(*) AS total_ventes,
-             SUM(s.quantity * p.price) AS total_montant
+             COUNT(*)                   AS total_ventes,
+             SUM(s.quantity * p.price)  AS total_montant
       FROM sales s
       JOIN products p ON s.product_id = p.id
-      WHERE s.user_id = $1
+      WHERE ${sql}
       GROUP BY s.payment_method
-    `, [req.user.boutique_id || req.user.id]);
+    `, params);
     res.json(rows);
   } catch (err) {
-    console.error(err);
+    console.error('GET /stats/paiements:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
@@ -68,20 +80,21 @@ router.get('/paiements', verifyToken, async (req, res) => {
 // Top produits
 router.get('/top-produits', verifyToken, requirePlan('rapports'), async (req, res) => {
   try {
+    const { sql, params } = boutique(req);
     const { rows } = await db.query(`
-      SELECT p.name AS produit,
-             SUM(s.quantity) AS total_quantite,
+      SELECT p.name                    AS produit,
+             SUM(s.quantity)           AS total_quantite,
              SUM(s.quantity * p.price) AS total_montant
       FROM sales s
       JOIN products p ON s.product_id = p.id
-      WHERE s.user_id = $1
+      WHERE ${sql}
       GROUP BY p.name
       ORDER BY total_quantite DESC
       LIMIT 10
-    `, [req.user.boutique_id || req.user.id]);
+    `, params);
     res.json(rows);
   } catch (err) {
-    console.error(err);
+    console.error('GET /stats/top-produits:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
@@ -90,44 +103,42 @@ router.get('/top-produits', verifyToken, requirePlan('rapports'), async (req, re
 router.get('/stock-faible', verifyToken, async (req, res) => {
   try {
     const seuil = parseInt(req.query.seuil) || 5;
+    const { sql, params } = boutique(req, 'p');
     const { rows } = await db.query(`
-      SELECT p.name AS produit,
-             p.stock
+      SELECT p.name AS produit, p.stock
       FROM products p
-      WHERE p.stock <= $1
-        AND p.user_id = $2
+      WHERE p.stock <= $${params.length + 1}
+        AND ${sql}
+        AND p.deleted_at IS NULL
       ORDER BY p.stock ASC
-    `, [seuil, req.user.boutique_id || req.user.id]);
+    `, [...params, seuil]);
     res.json(rows);
   } catch (err) {
-    console.error(err);
+    console.error('GET /stats/stock-faible:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
-// ═══════════════════════════════════════════════════════════
-// PATCH routes/stats.js
-// Ajouter cette route avant module.exports = router;
-// ═══════════════════════════════════════════════════════════
 
-// ── GET /stats/today ── Ventes + CA du jour en temps réel
+// Stats du jour (tableau de bord)
 router.get('/today', verifyToken, async (req, res) => {
   try {
+    const { sql, params } = boutique(req);
     const { rows } = await db.query(`
       SELECT
-        COUNT(*)::int                                    AS nb_ventes,
-        COALESCE(SUM(s.total), 0)::numeric               AS ca_jour,
-        COUNT(*) FILTER (WHERE s.paid = true)::int       AS nb_encaissees,
-        COALESCE(SUM(s.total) FILTER (WHERE s.paid = true), 0)::numeric AS ca_encaisse,
+        COUNT(*)::int                                                    AS nb_ventes,
+        COALESCE(SUM(s.total), 0)::numeric                               AS ca_jour,
+        COUNT(*) FILTER (WHERE s.paid = true)::int                       AS nb_encaissees,
+        COALESCE(SUM(s.total) FILTER (WHERE s.paid = true), 0)::numeric  AS ca_encaisse,
         COUNT(*) FILTER (WHERE s.payment_method = 'credit' AND s.paid = false)::int AS nb_credits
       FROM sales s
-      WHERE s.user_id = $1
+      WHERE ${sql}
         AND DATE(s.created_at) = CURRENT_DATE
-    `, [req.user.boutique_id || req.user.id]);
-
+    `, params);
     res.json(rows[0]);
   } catch (err) {
-    console.error('GET /stats/today:', err);
+    console.error('GET /stats/today:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
+
 module.exports = router;
