@@ -416,6 +416,17 @@ router.put('/upgrade/:userId/approve', authenticateToken, isAdmin, async (req, r
       console.error('Email bienvenue:', mailErr.message);
     }
 
+    // Envoyer une push notification à l'utilisateur
+    try {
+      const { sendPushToUser } = require('./push');
+      const planCfg = { Starter:'🌱', Pro:'⭐', Business:'🏆', Enterprise:'🚀' };
+      await sendPushToUser(parseInt(req.params.userId), {
+        title: '🎉 Abonnement activé !',
+        body:  `Votre plan ${planCfg[planName] || ''} ${planName} est maintenant actif.`,
+        url:   '/',
+      });
+    } catch { /* push non-bloquant */ }
+
     res.json({ message: `Plan ${planName} activé`, user: u });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
