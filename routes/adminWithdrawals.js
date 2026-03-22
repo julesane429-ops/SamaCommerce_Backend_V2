@@ -13,7 +13,6 @@ function isAdmin(req, res, next) {
 
 // 🔹 Créer une demande de retrait
 router.post("/", verifyToken, isAdmin, async (req, res) => {
-  console.log("📌 Requête retrait reçue:", req.user, req.body);
   const { amount, method } = req.body;
   if (!amount || !method) {
     return res.status(400).json({ error: "Champs manquants" });
