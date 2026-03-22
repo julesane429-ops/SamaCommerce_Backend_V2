@@ -4,7 +4,8 @@ const router     = express.Router();
 const db         = require('../db');
 const verifyToken = require('../middleware/auth');
 const crypto     = require('crypto');
-const employeeProxy = require('../middleware/employeeProxy');
+const employeeProxy          = require('../middleware/employeeProxy');
+const { getMembersLimit } = require('../middleware/planConfig');
 
 const INVITE_TTL_HOURS = 72;
 
@@ -38,13 +39,31 @@ router.post('/invite', verifyToken, async (req, res) => {
   if (!email) return res.status(400).json({ error: 'Email requis' });
 
   try {
-    // Vérifier quota (max 3 membres par boutique)
+    // Quota membres selon le plan de la boutique
+    const planRow = await db.query('SELECT plan, upgrade_status FROM users WHERE id = $1', [req.user.id]);
+    const planName  = planRow.rows[0]?.plan || 'Free';
+    const isActive  = planRow.rows[0]?.upgrade_status === 'validé';
+    const membLimit = getMembersLimit(isActive ? planName : 'Free');
+
+    if (membLimit === 0) {
+      return res.status(402).json({
+        error:            'Plan insuffisant',
+        code:             'PLAN_INSUFFICIENT',
+        message:          `Le plan ${planName} ne permet pas d'inviter des employés. Passez au plan Business.`,
+        upgrade_required: true,
+      });
+    }
+
     const { rows: existing } = await db.query(
       "SELECT COUNT(*)::int AS cnt FROM boutique_members WHERE boutique_id = $1 AND status != 'rejected'",
       [req.user.id]
     );
-    if (existing[0].cnt >= 3) {
-      return res.status(400).json({ error: 'Maximum 3 membres par boutique' });
+    if (existing[0].cnt >= membLimit) {
+      return res.status(400).json({
+        error:   `Maximum ${membLimit} membre${membLimit > 1 ? 's' : ''} pour le plan ${planName}`,
+        code:    'MEMBER_LIMIT_REACHED',
+        limit:   membLimit,
+      });
     }
 
     // Vérifier si déjà invité
