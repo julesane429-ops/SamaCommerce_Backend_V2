@@ -2,18 +2,17 @@
 // ─────────────────────────────────────────────────────────────
 // Injecte req.user.boutique_id dans chaque requête.
 //
-// Pour un propriétaire : lit l'en-tête X-Boutique-Id ou utilise
-//   la boutique primaire si non spécifié.
-// Pour un employé : utilise la boutique de son patron (déjà injectée
-//   par employeeProxy via req.user.id = boutique_owner_id).
+// Pour un propriétaire :
+//   Lit l'en-tête X-Boutique-Id ou utilise la boutique primaire.
 //
-// Toutes les routes peuvent ensuite utiliser req.user.boutique_id
-// au lieu de req.user.id pour cibler les données.
+// Pour un employé :
+//   employeeProxy a déjà fixé req.user.boutique_id = ref_boutique_id.
+//   Ce middleware NE L'ÉCRASE PAS — isolation garantie.
 // ─────────────────────────────────────────────────────────────
 
 const db = require('../db');
 
-// Cache boutique primaire: owner_id → boutique_id (TTL 5min)
+// Cache boutique primaire: owner_id → { id, expiresAt }
 const _primaryCache = new Map();
 const CACHE_TTL = 5 * 60 * 1000;
 
@@ -51,18 +50,20 @@ async function getPrimaryBoutiqueId(ownerId) {
 async function boutiqueContext(req, res, next) {
   if (!req.user?.id) return next();
 
-  // Ignorer les routes admin et auth
   const path = req.originalUrl || '';
   if (path.includes('/auth') || path.includes('/admin')) return next();
 
-  try {
-    const ownerId = req.user.id; // déjà remplacé par employeeProxy si employé
+  // ✅ Si employeeProxy a déjà positionné boutique_id (employé assigné à une boutique),
+  //    on ne l'écrase JAMAIS — c'est la garantie d'isolation par boutique.
+  if (req.user.boutique_id) return next();
 
-    // Le frontend peut demander une boutique spécifique via l'en-tête
+  try {
+    const ownerId = req.user.id;
+
+    // Le propriétaire peut demander une boutique spécifique via l'en-tête
     const requestedId = parseInt(req.headers['x-boutique-id'] || '0');
 
     if (requestedId) {
-      // Vérifier que cet owner possède bien cette boutique
       const { rows } = await db.query(
         'SELECT id FROM boutiques WHERE id = $1 AND owner_id = $2',
         [requestedId, ownerId]
@@ -77,7 +78,7 @@ async function boutiqueContext(req, res, next) {
     req.user.boutique_id = await getPrimaryBoutiqueId(ownerId);
   } catch (err) {
     console.error('boutiqueContext:', err.message);
-    // fail-open : le comportement legacy (user_id) prend le relais
+    // fail-open
   }
 
   next();
