@@ -67,7 +67,7 @@ router.delete('/:id', verifyToken, perm('categories'), async (req, res) => {
     }
 
     // Supprimer
-    await db.query('DELETE FROM categories WHERE id = $1 AND user_id = $2', [id, req.user.id]);
+    await db.query(`DELETE FROM categories WHERE id = $1 AND (boutique_id = $2 OR (boutique_id IS NULL AND user_id = $2))`, [id, req.user.id]);
     res.json({ success: true, message: 'Catégorie supprimée avec succès' });
   } catch (err) {
     console.error('Erreur DELETE /categories/:id:', err.message);
