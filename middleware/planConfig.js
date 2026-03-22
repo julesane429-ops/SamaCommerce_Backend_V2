@@ -9,7 +9,10 @@ const PLANS = {
     label:          'Gratuit',
     price:          0,
     products_limit: 5,
-    members_limit:  0,       // pas d'employés
+    members_limit:  0,
+    boutiques_limit: 1,
+    boutiques_limit: 1,
+    boutiques_limit: 1,       // pas d'employés
     features: {
       ventes:       true,
       stock:        true,
@@ -26,6 +29,7 @@ const PLANS = {
       whatsapp:     false,
       team:         false,
       finance:      false,
+      multi_boutique: false,
     },
   },
 
@@ -34,6 +38,9 @@ const PLANS = {
     price:          2500,
     products_limit: 30,
     members_limit:  0,
+    boutiques_limit: 1,
+    boutiques_limit: 1,
+    boutiques_limit: 1,
     features: {
       ventes:       true,
       stock:        true,
@@ -50,6 +57,7 @@ const PLANS = {
       whatsapp:     false,
       team:         false,
       finance:      false,
+      multi_boutique: false,
     },
   },
 
@@ -58,6 +66,9 @@ const PLANS = {
     price:          5000,
     products_limit: Infinity,
     members_limit:  0,
+    boutiques_limit: 1,
+    boutiques_limit: 1,
+    boutiques_limit: 1,
     features: {
       ventes:       true,
       stock:        true,
@@ -74,6 +85,7 @@ const PLANS = {
       whatsapp:     true,
       team:         false,
       finance:      true,
+      multi_boutique: false,
     },
   },
 
@@ -82,6 +94,7 @@ const PLANS = {
     price:          9000,
     products_limit: Infinity,
     members_limit:  3,
+    boutiques_limit: 1,
     features: {
       ventes:       true,
       stock:        true,
@@ -98,12 +111,38 @@ const PLANS = {
       whatsapp:     true,
       team:         true,
       finance:      true,
+      multi_boutique: false,
+    },
+  },
+  Enterprise: {
+    label:          'Enterprise',
+    price:          15000,
+    products_limit: Infinity,
+    members_limit:  5,        // 5 employés
+    boutiques_limit: 3,       // 3 boutiques
+    features: {
+      ventes:       true,
+      stock:        true,
+      categories:   true,
+      caisse:       true,
+      credits:      true,
+      clients:      true,
+      fournisseurs: true,
+      commandes:    true,
+      livraisons:   true,
+      rapports:     true,
+      photos:       true,
+      export:       true,
+      whatsapp:     true,
+      team:         true,
+      finance:      true,
+      multi_boutique: true,   // NOUVELLE FEATURE
     },
   },
 };
 
 // Plans considérés comme "actifs" (payants validés)
-const PAID_PLANS = ['Starter', 'Pro', 'Business'];
+const PAID_PLANS = ['Starter', 'Pro', 'Business', 'Enterprise'];
 
 // Retourne la config d'un plan (fallback sur Free si inconnu)
 function getPlan(planName) {
@@ -126,4 +165,9 @@ function getMembersLimit(planName) {
   return getPlan(planName).members_limit;
 }
 
-module.exports = { PLANS, PAID_PLANS, getPlan, hasFeature, getProductLimit, getMembersLimit };
+// Limite de boutiques pour un plan
+function getBoutiquesLimit(planName) {
+  return getPlan(planName).boutiques_limit || 1;
+}
+
+module.exports = { PLANS, PAID_PLANS, getPlan, hasFeature, getProductLimit, getMembersLimit, getBoutiquesLimit };
