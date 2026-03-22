@@ -336,4 +336,95 @@ router.get('/livraisons', verifyToken, isAdmin, async (req, res) => {
   }
 });
 
+
+// ── GET /admin-stats/business ── MRR, churn, conversion, limites
+router.get('/business', verifyToken, isAdmin, async (req, res) => {
+  try {
+    const db = require('../db');
+
+    // MRR par plan (revenus récurrents mensuels)
+    const mrrQ = await db.query(`
+      SELECT
+        plan,
+        COUNT(*)::int AS nb_actifs,
+        COALESCE(SUM(amount), 0)::numeric AS mrr_total
+      FROM users
+      WHERE upgrade_status = 'validé'
+        AND plan IN ('Starter','Pro','Business')
+        AND (expiration IS NULL OR expiration >= CURRENT_DATE)
+      GROUP BY plan
+      ORDER BY mrr_total DESC
+    `);
+
+    // Taux de conversion Free → payant
+    const convQ = await db.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE plan = 'Free')::int                              AS free_count,
+        COUNT(*) FILTER (WHERE plan IN ('Starter','Pro','Business')
+                           AND upgrade_status = 'validé')::int                  AS paid_count,
+        COUNT(*) FILTER (WHERE upgrade_status = 'en attente')::int              AS pending_count,
+        COUNT(*) FILTER (WHERE upgrade_status = 'expiré')::int                  AS churned_count,
+        COUNT(*)::int                                                             AS total_count
+      FROM users
+      WHERE role != 'admin'
+    `);
+    const c = convQ.rows[0];
+    const conversionRate = c.total_count > 0
+      ? ((c.paid_count / c.total_count) * 100).toFixed(1)
+      : '0.0';
+    const churnRate = (c.paid_count + c.churned_count) > 0
+      ? ((c.churned_count / (c.paid_count + c.churned_count)) * 100).toFixed(1)
+      : '0.0';
+
+    // Qui approche la limite 5 produits (Free → cible de conversion)
+    const nearLimitQ = await db.query(`
+      SELECT u.id, u.username, u.company_name, u.phone, COUNT(p.id)::int AS nb_produits
+      FROM users u
+      LEFT JOIN products p ON p.user_id = u.id
+      WHERE u.plan = 'Free' AND u.upgrade_status != 'en attente'
+      GROUP BY u.id, u.username, u.company_name, u.phone
+      HAVING COUNT(p.id) >= 4
+      ORDER BY nb_produits DESC
+      LIMIT 10
+    `);
+
+    // Nouveaux inscrits 30 derniers jours
+    const growthQ = await db.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days')::int AS new_30d,
+        COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days')::int  AS new_7d
+      FROM users WHERE role != 'admin'
+    `);
+
+    // Abonnements expirant dans 7 jours
+    const expiringQ = await db.query(`
+      SELECT COUNT(*)::int AS expiring_soon
+      FROM users
+      WHERE plan IN ('Starter','Pro','Business')
+        AND upgrade_status = 'validé'
+        AND expiration BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'
+    `);
+
+    res.json({
+      mrr:          mrrQ.rows,
+      mrr_total:    mrrQ.rows.reduce((s, r) => s + parseFloat(r.mrr_total), 0),
+      conversion: {
+        rate:         conversionRate + '%',
+        free_count:   c.free_count,
+        paid_count:   c.paid_count,
+        pending_count: c.pending_count,
+        churned_count: c.churned_count,
+        total_count:  c.total_count,
+      },
+      churn_rate:     churnRate + '%',
+      near_limit:     nearLimitQ.rows,
+      growth:         growthQ.rows[0],
+      expiring_soon:  expiringQ.rows[0].expiring_soon,
+    });
+  } catch (err) {
+    console.error('GET /admin-stats/business:', err.message);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
 module.exports = router;
