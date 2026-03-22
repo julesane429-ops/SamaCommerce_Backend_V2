@@ -188,17 +188,31 @@ router.patch('/:id', verifyToken, async (req, res) => {
 // ── DELETE /members/:id ── Retirer un membre
 router.delete('/:id', verifyToken, async (req, res) => {
   try {
-    const { rowCount } = await db.query(
-      'DELETE FROM boutique_members WHERE id = $1 AND boutique_id = $2',
-      [req.params.id, req.user.id]
+    // Récupérer member_id AVANT la suppression pour invalider le cache proxy
+    const { rows: existing } = await db.query(
+      'SELECT id, member_id, boutique_id FROM boutique_members WHERE id = $1',
+      [req.params.id]
     );
-    if (!rowCount) return res.status(404).json({ error: 'Membre introuvable' });
 
-    // Invalider le cache proxy
-    const { rows: deleted } = await db.query(
-      'SELECT member_id FROM boutique_members WHERE id=$1', [req.params.id]
-    ).catch(() => ({ rows: [] }));
-    if (deleted[0]?.member_id) employeeProxy.invalidate(deleted[0].member_id);
+    if (!existing.length) {
+      return res.status(404).json({ error: 'Membre introuvable' });
+    }
+
+    // Vérifier que ce membre appartient bien à cette boutique
+    if (String(existing[0].boutique_id) !== String(req.user.id)) {
+      return res.status(403).json({ error: 'Accès refusé' });
+    }
+
+    // Supprimer
+    await db.query(
+      'DELETE FROM boutique_members WHERE id = $1',
+      [req.params.id]
+    );
+
+    // Invalider le cache proxy si l'employé était connecté
+    if (existing[0].member_id) {
+      employeeProxy.invalidate(existing[0].member_id);
+    }
 
     res.json({ message: 'Membre retiré' });
   } catch (err) {
