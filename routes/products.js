@@ -81,8 +81,8 @@ router.post('/', verifyToken, perm('stock'), async (req, res) => {
     }
 
     const result = await db.query(
-      `INSERT INTO products (name, category_id, scent, price, stock, price_achat, user_id, image_url)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO products (name, category_id, scent, price, stock, price_achat, user_id, boutique_id, image_url)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
       [
         name,
@@ -91,7 +91,7 @@ router.post('/', verifyToken, perm('stock'), async (req, res) => {
         Number.isFinite(+price) ? +price : 0,
         Number.isFinite(+stock) ? +stock : 0,
         Number.isFinite(+price_achat) ? +price_achat : 0,
-        userId, image_url || null
+        userId, req.user.boutique_id || null, image_url || null
       ]
     );
 
@@ -132,7 +132,7 @@ router.patch('/:id', verifyToken, perm('stock'), async (req, res) => {
 
     const result = await db.query(
       `UPDATE products SET ${set.join(', ')}
-       WHERE id = $${i++} AND user_id = $${i}
+       WHERE id = $${i++} AND (boutique_id = $${i} OR (boutique_id IS NULL AND user_id = $${i}))
        RETURNING *`,
       values
     );
@@ -182,4 +182,4 @@ router.delete('/:id/image', verifyToken, async (req, res) => {
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
-module.exports = router;
+module.exports = router;s
