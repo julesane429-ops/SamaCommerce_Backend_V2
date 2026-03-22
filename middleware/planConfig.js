@@ -167,7 +167,11 @@ function getMembersLimit(planName) {
 
 // Limite de boutiques pour un plan
 function getBoutiquesLimit(planName) {
-  return getPlan(planName).boutiques_limit || 1;
+  const plan = getPlan(planName);
+  // Explicit check per plan to handle old deployments
+  if (planName === 'Enterprise') return 3;
+  if (plan.boutiques_limit && plan.boutiques_limit > 0) return plan.boutiques_limit;
+  return 1;
 }
 
 module.exports = { PLANS, PAID_PLANS, getPlan, hasFeature, getProductLimit, getMembersLimit, getBoutiquesLimit };
