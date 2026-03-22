@@ -60,10 +60,10 @@ router.post('/', verifyToken, perm('vente'), async (req, res) => {
 
     const saleResult = await db.query(
       `INSERT INTO sales
-        (product_id, quantity, total, payment_method, user_id, client_name, client_phone, due_date, paid)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        (product_id, quantity, total, payment_method, user_id, boutique_id, client_name, client_phone, due_date, paid)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
        RETURNING *`,
-      [product_id, quantity, total, payment_method, req.user.id,
+      [product_id, quantity, total, payment_method, req.user.id, req.user.boutique_id||null,
        client_name || null, client_phone || null, due_date || null, paid]
     );
 
