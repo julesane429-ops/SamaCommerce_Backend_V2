@@ -18,7 +18,7 @@ router.get('/ventes-par-categorie', verifyToken, perm('rapports'), requirePlan('
       WHERE s.user_id = $1
       GROUP BY c.name
       ORDER BY total_quantite DESC
-    `, [req.user.id]);
+    `, [req.user.boutique_id || req.user.id]);
     res.json(rows);
   } catch (err) {
     console.error(err);
@@ -38,7 +38,7 @@ router.get('/ventes-par-jour', verifyToken, perm('rapports'), async (req, res) =
       WHERE s.user_id = $1
       GROUP BY DATE(s.created_at)
       ORDER BY date ASC
-    `, [req.user.id]);
+    `, [req.user.boutique_id || req.user.id]);
     res.json(rows);
   } catch (err) {
     console.error(err);
@@ -57,7 +57,7 @@ router.get('/paiements', verifyToken, async (req, res) => {
       JOIN products p ON s.product_id = p.id
       WHERE s.user_id = $1
       GROUP BY s.payment_method
-    `, [req.user.id]);
+    `, [req.user.boutique_id || req.user.id]);
     res.json(rows);
   } catch (err) {
     console.error(err);
@@ -78,7 +78,7 @@ router.get('/top-produits', verifyToken, requirePlan('rapports'), async (req, re
       GROUP BY p.name
       ORDER BY total_quantite DESC
       LIMIT 10
-    `, [req.user.id]);
+    `, [req.user.boutique_id || req.user.id]);
     res.json(rows);
   } catch (err) {
     console.error(err);
@@ -97,7 +97,7 @@ router.get('/stock-faible', verifyToken, async (req, res) => {
       WHERE p.stock <= $1
         AND p.user_id = $2
       ORDER BY p.stock ASC
-    `, [seuil, req.user.id]);
+    `, [seuil, req.user.boutique_id || req.user.id]);
     res.json(rows);
   } catch (err) {
     console.error(err);
@@ -122,7 +122,7 @@ router.get('/today', verifyToken, async (req, res) => {
       FROM sales s
       WHERE s.user_id = $1
         AND DATE(s.created_at) = CURRENT_DATE
-    `, [req.user.id]);
+    `, [req.user.boutique_id || req.user.id]);
 
     res.json(rows[0]);
   } catch (err) {
