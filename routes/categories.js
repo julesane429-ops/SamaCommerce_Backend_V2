@@ -28,10 +28,10 @@ router.post('/', verifyToken, perm('categories'), async (req, res) => {
     }
 
     const result = await db.query(
-      `INSERT INTO categories (name, user_id, emoji, couleur) 
-       VALUES ($1, $2, $3, $4) 
-       RETURNING id, name, user_id, emoji, couleur`,
-      [name.trim(), req.user.id, emoji || '🏷️', couleur || null]
+      `INSERT INTO categories (name, user_id, boutique_id, emoji, couleur) 
+       VALUES ($1, $2, $3, $4, $5) 
+       RETURNING id, name, user_id, boutique_id, emoji, couleur`,
+      [name.trim(), req.user.id, req.user.boutique_id || null, emoji || '🏷️', couleur || null]
     );
 
     res.status(201).json(result.rows[0]);
