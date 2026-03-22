@@ -1,76 +1,79 @@
-const express = require('express');
-const router = express.Router();
-const db = require('../db');
+const express     = require('express');
+const router      = express.Router();
+const db          = require('../db');
 const verifyToken = require('../middleware/auth');
 const perm        = require('../middleware/checkPermission');
 
-// GET : Liste catégories utilisateur
+function catOwner(req) {
+  return {
+    sql:    '(boutique_id = $1 OR (boutique_id IS NULL AND user_id = $2))',
+    params: [req.user.boutique_id, req.user.id],
+  };
+}
+
+// GET /categories
 router.get('/', verifyToken, async (req, res) => {
   try {
-    const result = await db.query(
-      `SELECT id, name, user_id, emoji, couleur FROM categories WHERE ${req.user.boutique_id ? 'boutique_id' : 'user_id'} = $1 ORDER BY id`,
-      [req.user.boutique_id || req.user.id]
+    const { sql, params } = catOwner(req);
+    const { rows } = await db.query(
+      `SELECT id, name, user_id, emoji, couleur FROM categories WHERE ${sql} ORDER BY id`,
+      params
     );
-    res.json(result.rows);
+    res.json(rows);
   } catch (err) {
-    console.error('Erreur lors de la récupération des catégories:', err.message);
+    console.error('GET /categories:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
 
-// POST : Créer catégorie
+// POST /categories
 router.post('/', verifyToken, perm('categories'), async (req, res) => {
   try {
     const { name, emoji, couleur } = req.body;
+    if (!name?.trim()) return res.status(400).json({ error: 'Le nom est requis' });
 
-    if (!name || name.trim() === '') {
-      return res.status(400).json({ error: 'Le nom de la catégorie est requis' });
-    }
-
-    const result = await db.query(
-      `INSERT INTO categories (name, user_id, boutique_id, emoji, couleur) 
-       VALUES ($1, $2, $3, $4, $5) 
+    const { rows } = await db.query(
+      `INSERT INTO categories (name, user_id, boutique_id, emoji, couleur)
+       VALUES ($1, $2, $3, $4, $5)
        RETURNING id, name, user_id, boutique_id, emoji, couleur`,
       [name.trim(), req.user.id, req.user.boutique_id || null, emoji || '🏷️', couleur || null]
     );
-
-    res.status(201).json(result.rows[0]);
+    res.status(201).json(rows[0]);
   } catch (err) {
-    console.error('Erreur POST /categories:', err.message);
+    console.error('POST /categories:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
 
-
-// DELETE : Supprimer catégorie utilisateur
+// DELETE /categories/:id
 router.delete('/:id', verifyToken, perm('categories'), async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ error: 'ID invalide' });
 
-    // Vérifier si la catégorie appartient à l’utilisateur
-    const catCheck = await db.query(
-      'SELECT * FROM categories WHERE id = $1 AND user_id = $2',
-      [id, req.user.id]
-    );
-    if (catCheck.rowCount === 0) {
-      return res.status(404).json({ error: 'Catégorie non trouvée ou non autorisée' });
-    }
+    const { sql, params } = catOwner(req);
 
-    // Vérifier s'il y a des produits liés
-    const prodCheck = await db.query(
-      'SELECT COUNT(*) FROM products WHERE category_id = $1 AND user_id = $2',
-      [id, req.user.id]
+    const { rows } = await db.query(
+      `SELECT id FROM categories WHERE id = $${params.length + 1} AND ${sql}`,
+      [...params, id]
     );
-    if (parseInt(prodCheck.rows[0].count, 10) > 0) {
+    if (!rows.length) return res.status(404).json({ error: 'Catégorie non trouvée ou non autorisée' });
+
+    // Vérifier produits liés dans cette boutique
+    const { sql: ps, params: pp } = catOwner(req);
+    const { rows: prods } = await db.query(
+      `SELECT COUNT(*)::int AS cnt FROM products
+       WHERE category_id = $${pp.length + 1} AND ${ps} AND deleted_at IS NULL`,
+      [...pp, id]
+    );
+    if (prods[0].cnt > 0) {
       return res.status(400).json({ error: 'Impossible de supprimer : catégorie avec produits.' });
     }
 
-    // Supprimer
-    await db.query(`DELETE FROM categories WHERE id = $1 AND (boutique_id = $2 OR (boutique_id IS NULL AND user_id = $2))`, [id, req.user.id]);
-    res.json({ success: true, message: 'Catégorie supprimée avec succès' });
+    await db.query('DELETE FROM categories WHERE id = $1', [id]);
+    res.json({ success: true, message: 'Catégorie supprimée' });
   } catch (err) {
-    console.error('Erreur DELETE /categories/:id:', err.message);
+    console.error('DELETE /categories/:id:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
