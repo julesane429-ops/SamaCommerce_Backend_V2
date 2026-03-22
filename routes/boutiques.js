@@ -7,13 +7,15 @@ const requirePlan = require('../middleware/checkSubscription');
 const { getBoutiquesLimit } = require('../middleware/planConfig');
 const { invalidate } = require('../middleware/boutiqueContext');
 
-// ── GET /boutiques ── Lister ses boutiques
+// ── GET /boutiques ── Lister ses boutiques avec stats ─────────────
 router.get('/', verifyToken, async (req, res) => {
   try {
     const { rows } = await db.query(
-      `SELECT b.*, 
-        (SELECT COUNT(*) FROM products WHERE boutique_id = b.id)::int AS nb_produits,
-        (SELECT COUNT(*) FROM sales    WHERE boutique_id = b.id)::int AS nb_ventes
+      `SELECT b.*,
+        (SELECT COUNT(*) FROM products  WHERE boutique_id = b.id)::int AS nb_produits,
+        (SELECT COUNT(*) FROM sales     WHERE boutique_id = b.id)::int AS nb_ventes,
+        (SELECT COUNT(*) FROM boutique_members
+         WHERE ref_boutique_id = b.id AND status = 'accepted')::int   AS nb_membres
        FROM boutiques b
        WHERE b.owner_id = $1
        ORDER BY b.is_primary DESC, b.created_at ASC`,
@@ -26,13 +28,14 @@ router.get('/', verifyToken, async (req, res) => {
   }
 });
 
-// ── POST /boutiques ── Créer une nouvelle boutique (Enterprise uniquement)
+// ── POST /boutiques ── Créer une boutique ─────────────────────────
+// Accessible uniquement avec multi_boutique (plan Enterprise)
+// ✅ Pas de limite de nombre pour Enterprise
 router.post('/', verifyToken, requirePlan('multi_boutique'), async (req, res) => {
   const { name, phone, address, emoji } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: 'Le nom est requis' });
 
   try {
-    // Vérifier la limite du plan
     const planRow = await db.query(
       'SELECT plan, upgrade_status FROM users WHERE id = $1',
       [req.user.id]
@@ -40,17 +43,20 @@ router.post('/', verifyToken, requirePlan('multi_boutique'), async (req, res) =>
     const plan  = planRow.rows[0]?.plan || 'Free';
     const limit = getBoutiquesLimit(plan);
 
-    const countRow = await db.query(
-      'SELECT COUNT(*)::int AS cnt FROM boutiques WHERE owner_id = $1',
-      [req.user.id]
-    );
-    if (countRow.rows[0].cnt >= limit) {
-      return res.status(400).json({
-        error:   `Limite atteinte`,
-        code:    'BOUTIQUE_LIMIT_REACHED',
-        limit,
-        message: `Le plan ${plan} permet au maximum ${limit} boutique${limit > 1 ? 's' : ''}.`,
-      });
+    // ✅ Infinity = pas de vérification de limite
+    if (isFinite(limit)) {
+      const countRow = await db.query(
+        'SELECT COUNT(*)::int AS cnt FROM boutiques WHERE owner_id = $1',
+        [req.user.id]
+      );
+      if (countRow.rows[0].cnt >= limit) {
+        return res.status(400).json({
+          error:   'Limite atteinte',
+          code:    'BOUTIQUE_LIMIT_REACHED',
+          limit,
+          message: `Le plan ${plan} permet au maximum ${limit} boutique${limit > 1 ? 's' : ''}.`,
+        });
+      }
     }
 
     const { rows } = await db.query(
@@ -67,16 +73,16 @@ router.post('/', verifyToken, requirePlan('multi_boutique'), async (req, res) =>
   }
 });
 
-// ── PATCH /boutiques/:id ── Modifier une boutique
+// ── PATCH /boutiques/:id ── Modifier une boutique ─────────────────
 router.patch('/:id', verifyToken, async (req, res) => {
   const { name, phone, address, emoji } = req.body;
   try {
     const { rows } = await db.query(
       `UPDATE boutiques SET
-         name    = COALESCE($1, name),
-         phone   = COALESCE($2, phone),
-         address = COALESCE($3, address),
-         emoji   = COALESCE($4, emoji),
+         name       = COALESCE($1, name),
+         phone      = COALESCE($2, phone),
+         address    = COALESCE($3, address),
+         emoji      = COALESCE($4, emoji),
          updated_at = NOW()
        WHERE id = $5 AND owner_id = $6
        RETURNING *`,
@@ -85,10 +91,9 @@ router.patch('/:id', verifyToken, async (req, res) => {
     );
     if (!rows.length) return res.status(404).json({ error: 'Boutique introuvable' });
 
-    // Invalider le cache
     invalidate(req.user.id);
 
-    // Sync le company_name si boutique primaire
+    // Sync company_name si boutique primaire
     if (rows[0].is_primary && name) {
       await db.query(
         'UPDATE users SET company_name = $1 WHERE id = $2',
@@ -103,7 +108,7 @@ router.patch('/:id', verifyToken, async (req, res) => {
   }
 });
 
-// ── DELETE /boutiques/:id ── Supprimer une boutique (pas la primaire)
+// ── DELETE /boutiques/:id ── Supprimer une boutique secondaire ─────
 router.delete('/:id', verifyToken, async (req, res) => {
   try {
     const { rows } = await db.query(
@@ -115,6 +120,20 @@ router.delete('/:id', verifyToken, async (req, res) => {
       return res.status(400).json({ error: 'Impossible de supprimer la boutique principale' });
     }
 
+    // Réassigner les membres de cette boutique à la boutique primaire
+    const primary = await db.query(
+      'SELECT id FROM boutiques WHERE owner_id = $1 AND is_primary = true LIMIT 1',
+      [req.user.id]
+    );
+    if (primary.rows.length) {
+      await db.query(
+        `UPDATE boutique_members
+         SET ref_boutique_id = $1
+         WHERE ref_boutique_id = $2`,
+        [primary.rows[0].id, req.params.id]
+      );
+    }
+
     await db.query('DELETE FROM boutiques WHERE id = $1', [req.params.id]);
     invalidate(req.user.id);
     res.json({ message: 'Boutique supprimée' });
@@ -124,29 +143,45 @@ router.delete('/:id', verifyToken, async (req, res) => {
   }
 });
 
-// ── GET /boutiques/:id/stats ── Statistiques d'une boutique
+// ── GET /boutiques/:id/stats ── Statistiques détaillées d'une boutique
 router.get('/:id/stats', verifyToken, async (req, res) => {
   try {
     const boutiqueId = parseInt(req.params.id);
 
-    // Vérifier l'appartenance
     const own = await db.query(
       'SELECT id FROM boutiques WHERE id = $1 AND owner_id = $2',
       [boutiqueId, req.user.id]
     );
     if (!own.rows.length) return res.status(403).json({ error: 'Accès refusé' });
 
-    const [produits, ventes, ca] = await Promise.all([
-      db.query('SELECT COUNT(*)::int AS cnt FROM products WHERE boutique_id = $1', [boutiqueId]),
-      db.query('SELECT COUNT(*)::int AS cnt FROM sales WHERE boutique_id = $1', [boutiqueId]),
-      db.query('SELECT COALESCE(SUM(total),0)::numeric AS total FROM sales WHERE boutique_id = $1 AND paid = true', [boutiqueId]),
+    const [produits, ventes, ca, membres] = await Promise.all([
+      db.query(
+        'SELECT COUNT(*)::int AS cnt FROM products WHERE boutique_id = $1 AND deleted_at IS NULL',
+        [boutiqueId]
+      ),
+      db.query(
+        'SELECT COUNT(*)::int AS cnt FROM sales WHERE boutique_id = $1',
+        [boutiqueId]
+      ),
+      db.query(
+        `SELECT COALESCE(SUM(total),0)::numeric AS total
+         FROM sales WHERE boutique_id = $1 AND paid = true`,
+        [boutiqueId]
+      ),
+      db.query(
+        `SELECT COUNT(*)::int AS cnt
+         FROM boutique_members
+         WHERE ref_boutique_id = $1 AND status = 'accepted'`,
+        [boutiqueId]
+      ),
     ]);
 
     res.json({
-      boutique_id:  boutiqueId,
-      nb_produits:  produits.rows[0].cnt,
-      nb_ventes:    ventes.rows[0].cnt,
-      ca_total:     parseFloat(ca.rows[0].total),
+      boutique_id: boutiqueId,
+      nb_produits: produits.rows[0].cnt,
+      nb_ventes:   ventes.rows[0].cnt,
+      ca_total:    parseFloat(ca.rows[0].total),
+      nb_membres:  membres.rows[0].cnt,
     });
   } catch (err) {
     console.error('GET /boutiques/:id/stats:', err.message);
