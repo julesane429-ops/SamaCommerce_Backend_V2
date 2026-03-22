@@ -92,43 +92,99 @@ app.use(express.static(path.join(process.cwd())));
 
 
 // ══════════════════════════════════════
-// CRON : recalcul alertes à minuit
+// CRON ABONNEMENTS — toutes les nuits à minuit
 // ══════════════════════════════════════
+const { sendEmail, emailRappel7J, emailRappel3J, emailExpiration } = require('./utils/mailer');
+
 cron.schedule('0 0 * * *', async () => {
-  console.log('⏰ Cron: recalcul des alertes...');
+  console.log('⏰ Cron abonnements: démarrage...');
   try {
-    await pool.query('DELETE FROM alerts');
 
-    const late = await pool.query(
-      `SELECT id, username, expiration, CURRENT_DATE - expiration AS days_late
-       FROM users
-       WHERE plan = 'Premium' AND expiration < CURRENT_DATE`
-    );
-    for (const u of late.rows) {
+    // ── 1. RAPPEL J-7 ──────────────────────────────────────
+    const in7 = await pool.query(`
+      SELECT id, username, company_name, phone, expiration
+      FROM users
+      WHERE plan = 'Premium'
+        AND upgrade_status = 'validé'
+        AND expiration::date = CURRENT_DATE + INTERVAL '7 days'
+    `);
+    for (const u of in7.rows) {
+      const { subject, html } = emailRappel7J(u);
+      await sendEmail(u.username, subject, html);
       await pool.query(
-        `INSERT INTO alerts (user_id, type, message, days)
-         VALUES ($1,'late',$2,$3)`,
-        [u.id, `Paiement en retard de ${u.days_late} jours`, u.days_late]
+        `INSERT INTO alerts (user_id, type, message, days) VALUES ($1,'upcoming',$2,$3)
+         ON CONFLICT DO NOTHING`,
+        [u.id, 'Abonnement expire dans 7 jours', 7]
       );
     }
+    console.log(`📧 Rappels J-7: ${in7.rows.length}`);
 
-    const upcoming = await pool.query(
-      `SELECT id, username, expiration, expiration - CURRENT_DATE AS days_left
-       FROM users
-       WHERE plan = 'Premium'
-         AND expiration BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '3 days'`
-    );
-    for (const u of upcoming.rows) {
+    // ── 2. RAPPEL J-3 ──────────────────────────────────────
+    const in3 = await pool.query(`
+      SELECT id, username, company_name, phone, expiration
+      FROM users
+      WHERE plan = 'Premium'
+        AND upgrade_status = 'validé'
+        AND expiration::date = CURRENT_DATE + INTERVAL '3 days'
+    `);
+    for (const u of in3.rows) {
+      const { subject, html } = emailRappel3J(u);
+      await sendEmail(u.username, subject, html);
       await pool.query(
-        `INSERT INTO alerts (user_id, type, message, days)
-         VALUES ($1,'upcoming',$2,$3)`,
-        [u.id, `Paiement dû dans ${u.days_left} jours`, u.days_left]
+        `INSERT INTO alerts (user_id, type, message, days) VALUES ($1,'upcoming',$2,$3)
+         ON CONFLICT DO NOTHING`,
+        [u.id, 'Abonnement expire dans 3 jours', 3]
       );
     }
+    console.log(`📧 Rappels J-3: ${in3.rows.length}`);
 
-    console.log('✅ Cron: alertes mises à jour !');
+    // ── 3. EXPIRATION J-0 : passer en Free ─────────────────
+    const expired = await pool.query(`
+      SELECT id, username, company_name, phone, expiration
+      FROM users
+      WHERE plan = 'Premium'
+        AND upgrade_status = 'validé'
+        AND expiration::date < CURRENT_DATE
+    `);
+    for (const u of expired.rows) {
+      // Rétrograder en Free
+      await pool.query(
+        `UPDATE users
+         SET plan = 'Free', upgrade_status = 'expiré', payment_status = 'Expiré'
+         WHERE id = $1`,
+        [u.id]
+      );
+      // Email d'expiration
+      const { subject, html } = emailExpiration(u);
+      await sendEmail(u.username, subject, html);
+      // Alerte admin
+      await pool.query(
+        `INSERT INTO alerts (user_id, type, message, days) VALUES ($1,'late',$2,$3)
+         ON CONFLICT DO NOTHING`,
+        [u.id, 'Abonnement expiré — compte rétrogradé en Free', 0]
+      );
+    }
+    console.log(`🔻 Expirations traitées: ${expired.rows.length}`);
+
+    // ── 4. RELANCE J+3 ─────────────────────────────────────
+    const lapsed3 = await pool.query(`
+      SELECT id, username, company_name, expiration
+      FROM users
+      WHERE plan = 'Free'
+        AND upgrade_status = 'expiré'
+        AND expiration::date = CURRENT_DATE - INTERVAL '3 days'
+    `);
+    for (const u of lapsed3.rows) {
+      await sendEmail(u.username,
+        `⏰ Votre boutique vous attend — Revenez en Premium — Sama Commerce`,
+        `<p>Bonjour ${u.company_name || u.username}, votre abonnement a expiré il y a 3 jours. Renouvelez sur <a href="${process.env.FRONTEND_URL || 'https://samacommerce-frontend-v2-1.onrender.com'}">Sama Commerce</a>.</p>`
+      );
+    }
+    console.log(`📧 Relances J+3: ${lapsed3.rows.length}`);
+
+    console.log('✅ Cron abonnements terminé.');
   } catch (err) {
-    console.error('❌ Cron erreur:', err);
+    console.error('❌ Cron erreur:', err.message);
   }
 });
 
