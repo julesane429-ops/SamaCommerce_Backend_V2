@@ -182,4 +182,4 @@ router.delete('/:id/image', verifyToken, async (req, res) => {
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
-module.exports = router;s
+module.exports = router;
