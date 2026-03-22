@@ -250,7 +250,7 @@ router.post("/users/:id/reminder", authenticateToken, isAdmin, async (req, res) 
 router.get("/pending", authenticateToken, isAdmin, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT id, username, company_name, phone, payment_method, amount, created_at
+      `SELECT id, username, company_name, phone, payment_method, amount, plan, created_at
        FROM users
        WHERE upgrade_status = 'en attente'
        ORDER BY created_at ASC`
@@ -377,11 +377,19 @@ router.put("/upgrade", authenticateToken, async (req, res) => {
 
 router.put('/upgrade/:userId/approve', authenticateToken, isAdmin, async (req, res) => {
   try {
-    // plan : Starter | Pro | Business (défaut: Pro pour rétrocompatibilité)
-    const planName = req.body.plan && PAID_PLANS.includes(req.body.plan)
-      ? req.body.plan
-      : 'Pro';
-    const months   = parseInt(req.body.months || '1');
+    const months = parseInt(req.body.months || '1');
+
+    // Déterminer le plan : req.body.plan prioritaire, sinon lire le plan demandé en DB
+    let planName = (req.body.plan && PAID_PLANS.includes(req.body.plan.trim()))
+      ? req.body.plan.trim()
+      : null;
+
+    if (!planName) {
+      // Lire le plan stocké lors de la demande (PUT /upgrade)
+      const dbRow = await pool.query('SELECT plan FROM users WHERE id = $1', [req.params.userId]);
+      const dbPlan = dbRow.rows[0]?.plan;
+      planName = (dbPlan && PAID_PLANS.includes(dbPlan)) ? dbPlan : 'Pro';
+    }
 
     const expiration = new Date();
     expiration.setMonth(expiration.getMonth() + months);
