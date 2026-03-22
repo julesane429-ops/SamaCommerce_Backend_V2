@@ -8,8 +8,8 @@ const perm        = require('../middleware/checkPermission');
 router.get('/', verifyToken, async (req, res) => {
   try {
     const result = await db.query(
-      'SELECT id, name, user_id, emoji, couleur FROM categories WHERE user_id = $1 ORDER BY id',
-      [req.user.id]
+      `SELECT id, name, user_id, emoji, couleur FROM categories WHERE ${req.user.boutique_id ? 'boutique_id' : 'user_id'} = $1 ORDER BY id`,
+      [req.user.boutique_id || req.user.id]
     );
     res.json(result.rows);
   } catch (err) {
