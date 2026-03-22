@@ -47,9 +47,33 @@ router.get('/:id', verifyToken, async (req, res) => {
 // POST /products : Ajoute un produit lié à l'utilisateur connecté
 router.post('/', verifyToken, perm('stock'), async (req, res) => {
   try {
-
     const { name, category_id, scent, price, stock, price_achat, image_url } = req.body;
     const userId = req.user.id;
+
+    // Vérifier le quota Free côté serveur (5 produits max)
+    // Contourne la vérification frontend que n'importe qui peut bypass via l'API
+    if (!req.user.isEmployee) {
+      const userRow = await db.query(
+        'SELECT plan, upgrade_status FROM users WHERE id = $1',
+        [userId]
+      );
+      const user = userRow.rows[0];
+      const isFree = !user || user.plan !== 'Premium' || user.upgrade_status !== 'validé';
+
+      if (isFree) {
+        const countRow = await db.query(
+          'SELECT COUNT(*)::int AS cnt FROM products WHERE user_id = $1',
+          [userId]
+        );
+        if (countRow.rows[0].cnt >= 5) {
+          return res.status(403).json({
+            error: 'Limite atteinte',
+            message: 'Le plan Gratuit est limité à 5 produits. Passez en Premium pour continuer.',
+            upgrade_required: true,
+          });
+        }
+      }
+    }
 
     const result = await db.query(
       `INSERT INTO products (name, category_id, scent, price, stock, price_achat, user_id, image_url)
