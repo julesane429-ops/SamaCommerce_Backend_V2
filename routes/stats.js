@@ -3,10 +3,10 @@ const router = express.Router();
 const db = require('../db');
 const verifyToken = require('../middleware/auth');
 const perm           = require('../middleware/checkPermission');
-const requirePremium = require('../middleware/checkSubscription');
+const requirePlan    = require('../middleware/checkSubscription');
 
 // Ventes par catégorie
-router.get('/ventes-par-categorie', verifyToken, perm('rapports'), requirePremium, async (req, res) => {
+router.get('/ventes-par-categorie', verifyToken, perm('rapports'), requirePlan('rapports'), async (req, res) => {
   try {
     const { rows } = await db.query(`
       SELECT c.name AS categorie,
@@ -66,7 +66,7 @@ router.get('/paiements', verifyToken, async (req, res) => {
 });
 
 // Top produits
-router.get('/top-produits', verifyToken, async (req, res) => {
+router.get('/top-produits', verifyToken, requirePlan('rapports'), async (req, res) => {
   try {
     const { rows } = await db.query(`
       SELECT p.name AS produit,
