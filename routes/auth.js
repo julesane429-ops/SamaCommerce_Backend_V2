@@ -347,18 +347,23 @@ router.get("/me/stats", authenticateToken, async (req, res) => {
 //   Upgrade Premium
 // ==========================
 router.put("/upgrade", authenticateToken, async (req, res) => {
-  const { phone, payment_method, amount } = req.body;
+  const { phone, payment_method, amount, plan } = req.body;
   if (!phone || !payment_method || !amount) {
     return res.status(400).json({ error: "Champs manquants" });
   }
+  // Valider que le plan demandé est un plan payant connu
+  const requestedPlan = (plan && PAID_PLANS.includes(plan)) ? plan : 'Pro';
+
   try {
-    // Enregistrer la demande en attente — l'expiration est fixée par l'admin à la validation
+    // Stocker le plan demandé dans payment_method note via un champ séparé
+    // On utilise le champ existant plan pour pré-stocker le plan souhaité
+    // L'admin verra quel plan a été demandé et validera (ou modifiera)
     const result = await pool.query(
       `UPDATE users SET phone=$1, payment_method=$2, amount=$3,
-       upgrade_status='en attente', payment_status='En attente'
-       WHERE id=$4
+       plan=$4, upgrade_status='en attente', payment_status='En attente'
+       WHERE id=$5
        RETURNING id, username, company_name, phone, plan, payment_method, amount, expiration, payment_status, upgrade_status`,
-      [phone, payment_method, amount, req.user.id]
+      [phone, payment_method, amount, requestedPlan, req.user.id]
     );
     if (!result.rows.length) return res.status(404).json({ error: "Utilisateur introuvable" });
     res.json({ message: "Demande d'upgrade enregistrée", user: result.rows[0] });
@@ -370,32 +375,38 @@ router.put("/upgrade", authenticateToken, async (req, res) => {
 
 router.put('/upgrade/:userId/approve', authenticateToken, isAdmin, async (req, res) => {
   try {
-    // Durée configurable via req.body.months (défaut 1 mois)
-    const months = parseInt(req.body.months || '1');
+    // plan : Starter | Pro | Business (défaut: Pro pour rétrocompatibilité)
+    const planName = req.body.plan && PAID_PLANS.includes(req.body.plan)
+      ? req.body.plan
+      : 'Pro';
+    const months   = parseInt(req.body.months || '1');
+
     const expiration = new Date();
     expiration.setMonth(expiration.getMonth() + months);
 
     const result = await pool.query(
       `UPDATE users
-       SET plan='Premium', upgrade_status='validé',
-           expiration=$2, payment_status='À jour'
-       WHERE id=$1
+       SET plan=$1, upgrade_status='validé',
+           expiration=$3, payment_status='À jour'
+       WHERE id=$2
        RETURNING id, username, plan, upgrade_status, expiration`,
-      [req.params.userId, expiration.toISOString().split('T')[0]]
+      [planName, req.params.userId, expiration.toISOString().split('T')[0]]
     );
     if (!result.rows.length) return res.status(404).json({ error: "Utilisateur introuvable" });
 
-    // Envoyer l'email de bienvenue Premium
+    // Invalider le cache plan pour que le middleware recharge immédiatement
+    invalidatePlanCache(parseInt(req.params.userId));
+
+    // Envoyer l'email de bienvenue
     const u = result.rows[0];
     try {
       const { subject, html } = emailBienvenuePremium(u, u.expiration);
       await sendEmail(u.username, subject, html);
     } catch (mailErr) {
-      console.error('Email bienvenue Premium:', mailErr.message);
-      // L'email est non-bloquant — on répond quand même
+      console.error('Email bienvenue:', mailErr.message);
     }
 
-    res.json({ message: "Upgrade validé", user: u });
+    res.json({ message: `Plan ${planName} activé`, user: u });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -406,6 +417,7 @@ router.put('/upgrade/:userId/reject', authenticateToken, isAdmin, async (req, re
       [req.params.userId]
     );
     if (!result.rows.length) return res.status(404).json({ error: "Utilisateur introuvable" });
+    invalidatePlanCache(parseInt(req.params.userId));
     res.json({ message: "Upgrade rejeté", user: result.rows[0] });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
