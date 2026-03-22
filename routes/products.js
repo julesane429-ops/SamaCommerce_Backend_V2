@@ -3,7 +3,8 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const verifyToken = require('../middleware/auth');
-const perm        = require('../middleware/checkPermission');
+const perm           = require('../middleware/checkPermission');
+const { getProductLimit } = require('../middleware/planConfig');
 
 // GET /products : Liste uniquement les produits de l'utilisateur connecté
 router.get('/', verifyToken, async (req, res) => {
@@ -50,25 +51,29 @@ router.post('/', verifyToken, perm('stock'), async (req, res) => {
     const { name, category_id, scent, price, stock, price_achat, image_url } = req.body;
     const userId = req.user.id;
 
-    // Vérifier le quota Free côté serveur (5 produits max)
-    // Contourne la vérification frontend que n'importe qui peut bypass via l'API
+    // Vérifier le quota produits selon le plan (côté serveur — non-bypassable)
     if (!req.user.isEmployee) {
       const userRow = await db.query(
         'SELECT plan, upgrade_status FROM users WHERE id = $1',
         [userId]
       );
-      const user = userRow.rows[0];
-      const isFree = !user || user.plan !== 'Premium' || user.upgrade_status !== 'validé';
+      const user      = userRow.rows[0];
+      const planName  = user?.plan || 'Free';
+      const isActive  = user?.upgrade_status === 'validé' || planName === 'Free';
+      const limit     = getProductLimit(isActive ? planName : 'Free');
 
-      if (isFree) {
+      if (limit !== Infinity) {
         const countRow = await db.query(
           'SELECT COUNT(*)::int AS cnt FROM products WHERE user_id = $1',
           [userId]
         );
-        if (countRow.rows[0].cnt >= 5) {
+        if (countRow.rows[0].cnt >= limit) {
           return res.status(403).json({
-            error: 'Limite atteinte',
-            message: 'Le plan Gratuit est limité à 5 produits. Passez en Premium pour continuer.',
+            error:            'Limite atteinte',
+            code:             'PRODUCT_LIMIT_REACHED',
+            limit,
+            plan:             planName,
+            message:          `Le plan ${planName} est limité à ${limit} produit${limit > 1 ? 's' : ''}. Passez au plan supérieur pour continuer.`,
             upgrade_required: true,
           });
         }
