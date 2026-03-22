@@ -6,14 +6,33 @@ const verifyToken = require('../middleware/auth');
 const perm        = require('../middleware/checkPermission');
 
 // ── Validation image base64 ──
-function validateImageUrl(imageUrl) {
-  if (!imageUrl) return { valid: true };
-  if (typeof imageUrl !== 'string') return { valid: false, error: 'Format image invalide' };
-  if (!imageUrl.startsWith('data:image/'))
-    return { valid: false, error: 'Seules les images sont acceptées (data:image/...)' };
-  if (imageUrl.length > 200 * 1024)
-    return { valid: false, error: `Image trop grande (max 150 Ko)` };
+function validateImageUrl(url) {
+  if (!url) return { valid: true };
+  if (typeof url !== 'string') return { valid: false, error: 'Format image invalide' };
+  if (!url.startsWith('data:image/')) return { valid: false, error: 'Seules les images sont acceptées' };
+  if (url.length > 200 * 1024) return { valid: false, error: 'Image trop grande (max 150 Ko)' };
   return { valid: true };
+}
+
+// ── Colonnes garanties dans la table products ──
+// (celles du schéma original, toujours présentes)
+const SAFE_COLS = ['name','category_id','scent','price','stock','price_achat','image_url'];
+
+// ── Colonnes optionnelles ajoutées via migrations ──
+// Détectées dynamiquement au premier appel
+let _detectedCols = null;
+async function getAvailableCols() {
+  if (_detectedCols) return _detectedCols;
+  try {
+    const r = await db.query(`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name = 'products'
+    `);
+    _detectedCols = new Set(r.rows.map(x => x.column_name));
+  } catch (_) {
+    _detectedCols = new Set(SAFE_COLS);
+  }
+  return _detectedCols;
 }
 
 // GET /products
@@ -33,13 +52,12 @@ router.get('/', verifyToken, async (req, res) => {
 // GET /products/:id
 router.get('/:id', verifyToken, async (req, res) => {
   try {
-    const result = await db.query(
+    const r = await db.query(
       'SELECT * FROM products WHERE id = $1 AND user_id = $2',
       [req.params.id, req.user.id]
     );
-    if (!result.rows.length)
-      return res.status(404).json({ error: 'Produit introuvable ou non autorisé.' });
-    res.json(result.rows[0]);
+    if (!r.rows.length) return res.status(404).json({ error: 'Produit introuvable.' });
+    res.json(r.rows[0]);
   } catch (err) {
     console.error('GET /products/:id:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
@@ -50,27 +68,38 @@ router.get('/:id', verifyToken, async (req, res) => {
 router.post('/', verifyToken, perm('stock'), async (req, res) => {
   try {
     const { name, category_id, scent, price, stock, price_achat, image_url } = req.body;
-
     if (image_url) {
       const chk = validateImageUrl(image_url);
       if (!chk.valid) return res.status(400).json({ error: chk.error });
     }
+    const cols  = await getAvailableCols();
+    const extra = {}; // colonnes optionnelles présentes en base
+    if (cols.has('is_mixed_sale')) extra.is_mixed_sale = req.body.is_mixed_sale === true || req.body.is_mixed_sale === 'true';
+    if (cols.has('lot_size'))      extra.lot_size      = parseInt(req.body.lot_size) || 1;
+    if (cols.has('price_gros'))    extra.price_gros    = req.body.price_gros   != null ? parseFloat(req.body.price_gros)   : null;
+    if (cols.has('price_detail'))  extra.price_detail  = req.body.price_detail != null ? parseFloat(req.body.price_detail) : null;
+    if (cols.has('description'))   extra.description   = req.body.description  || null;
 
-    const result = await db.query(
-      `INSERT INTO products (name, category_id, scent, price, stock, price_achat, user_id, image_url)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [
-        name,
-        parseInt(category_id) || null,
-        scent || null,
-        Number.isFinite(+price)       ? +price       : 0,
-        Number.isFinite(+stock)       ? +stock       : 0,
-        Number.isFinite(+price_achat) ? +price_achat : 0,
-        req.user.id,
-        image_url || null,
-      ]
+    const extraCols = Object.keys(extra);
+    const allCols   = ['name','category_id','scent','price','stock','price_achat','user_id','image_url', ...extraCols];
+    const allVals   = [
+      name,
+      parseInt(category_id) || null,
+      scent || null,
+      Number.isFinite(+price)       ? +price       : 0,
+      Number.isFinite(+stock)       ? +stock       : 0,
+      Number.isFinite(+price_achat) ? +price_achat : 0,
+      req.user.id,
+      image_url || null,
+      ...extraCols.map(k => extra[k]),
+    ];
+    const placeholders = allVals.map((_, idx) => `$${idx + 1}`).join(',');
+
+    const r = await db.query(
+      `INSERT INTO products (${allCols.join(',')}) VALUES (${placeholders}) RETURNING *`,
+      allVals
     );
-    res.status(201).json(result.rows[0]);
+    res.status(201).json(r.rows[0]);
   } catch (err) {
     console.error('POST /products:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
@@ -85,86 +114,46 @@ router.patch('/:id', verifyToken, perm('stock'), async (req, res) => {
       if (!chk.valid) return res.status(400).json({ error: chk.error });
     }
 
-    // Champs de base — toujours présents en base
-    const BASE_FIELDS = [
-      'name', 'category_id', 'scent', 'price', 'stock',
-      'price_achat', 'image_url', 'description',
-    ];
+    const cols = await getAvailableCols();
+    const set = [], values = [];
+    let i = 1;
 
-    // Champs vente mixte — uniquement si la migration a été exécutée
-    // (on les inclut dans la tentative principale et on catch l'erreur colonne)
-    const MIXED_FIELDS = ['is_mixed_sale', 'lot_size', 'price_gros', 'price_detail'];
+    // Toutes les colonnes possibles avec leur conversion
+    const ALL_COLS = {
+      name:          v => v,
+      category_id:   v => parseInt(v) || null,
+      scent:         v => v || null,
+      price:         v => Number.isFinite(+v) ? +v : 0,
+      stock:         v => Number.isFinite(+v) ? +v : 0,
+      price_achat:   v => Number.isFinite(+v) ? +v : 0,
+      image_url:     v => v || null,
+      description:   v => v || null,
+      is_mixed_sale: v => v === true || v === 'true',
+      lot_size:      v => parseInt(v) || 1,
+      price_gros:    v => (v != null && v !== '') ? parseFloat(v) : null,
+      price_detail:  v => (v != null && v !== '') ? parseFloat(v) : null,
+    };
 
-    function buildQuery(fieldList) {
-      const set = [], values = [];
-      let i = 1;
-      for (const f of fieldList) {
-        if (!Object.prototype.hasOwnProperty.call(req.body, f)) continue;
-        let val = req.body[f];
-        if (['price', 'stock', 'price_achat', 'category_id'].includes(f)) {
-          val = Number.isFinite(+val) ? +val : 0;
-        } else if (f === 'is_mixed_sale') {
-          val = val === true || val === 'true';
-        } else if (f === 'lot_size') {
-          val = parseInt(val) || 1;
-        } else if (f === 'price_gros' || f === 'price_detail') {
-          val = (val !== null && val !== '' && val !== undefined) ? parseFloat(val) : null;
-        }
-        values.push(val);
-        set.push(`${f} = $${i++}`);
-      }
-      return { set, values, i };
+    for (const [col, convert] of Object.entries(ALL_COLS)) {
+      // Sauter si la colonne n'existe pas en base
+      if (!cols.has(col)) continue;
+      // Sauter si non fourni dans le body
+      if (!Object.prototype.hasOwnProperty.call(req.body, col)) continue;
+      values.push(convert(req.body[col]));
+      set.push(`${col} = $${i++}`);
     }
 
-    // Essayer d'abord avec tous les champs (base + mixte)
-    const hasMixed = MIXED_FIELDS.some(f =>
-      Object.prototype.hasOwnProperty.call(req.body, f)
-    );
-    const fieldsToUse = hasMixed ? [...BASE_FIELDS, ...MIXED_FIELDS] : BASE_FIELDS;
-    const { set, values, i } = buildQuery(fieldsToUse);
-
-    if (set.length === 0)
-      return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
+    if (set.length === 0) return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
 
     values.push(req.params.id);
     values.push(req.user.id);
 
-    try {
-      const result = await db.query(
-        `UPDATE products SET ${set.join(', ')}
-         WHERE id = $${i} AND user_id = $${i + 1}
-         RETURNING *`,
-        values
-      );
-      if (!result.rows.length)
-        return res.status(404).json({ error: 'Produit introuvable ou non autorisé.' });
-      return res.json(result.rows[0]);
-
-    } catch (dbErr) {
-      // Si les colonnes vente mixte n'existent pas encore (migration non exécutée)
-      // → réessayer sans les champs mixtes
-      if (dbErr.message && dbErr.message.includes('column') &&
-          dbErr.message.includes('does not exist')) {
-
-        const { set: s2, values: v2, i: i2 } = buildQuery(BASE_FIELDS);
-        if (s2.length === 0)
-          return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
-        v2.push(req.params.id);
-        v2.push(req.user.id);
-
-        const r2 = await db.query(
-          `UPDATE products SET ${s2.join(', ')}
-           WHERE id = $${i2} AND user_id = $${i2 + 1}
-           RETURNING *`,
-          v2
-        );
-        if (!r2.rows.length)
-          return res.status(404).json({ error: 'Produit introuvable ou non autorisé.' });
-        return res.json(r2.rows[0]);
-      }
-      throw dbErr; // autre erreur → remonter
-    }
-
+    const r = await db.query(
+      `UPDATE products SET ${set.join(', ')} WHERE id = $${i} AND user_id = $${i + 1} RETURNING *`,
+      values
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Produit introuvable ou non autorisé.' });
+    res.json(r.rows[0]);
   } catch (err) {
     console.error('PATCH /products/:id:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
@@ -174,12 +163,11 @@ router.patch('/:id', verifyToken, perm('stock'), async (req, res) => {
 // DELETE /products/:id
 router.delete('/:id', verifyToken, perm('stock'), async (req, res) => {
   try {
-    const result = await db.query(
+    const r = await db.query(
       'DELETE FROM products WHERE id = $1 AND user_id = $2 RETURNING *',
       [req.params.id, req.user.id]
     );
-    if (!result.rows.length)
-      return res.status(404).json({ error: 'Produit introuvable ou non autorisé.' });
+    if (!r.rows.length) return res.status(404).json({ error: 'Produit introuvable.' });
     res.json({ message: 'Produit supprimé' });
   } catch (err) {
     console.error('DELETE /products:', err.message);
@@ -190,11 +178,11 @@ router.delete('/:id', verifyToken, perm('stock'), async (req, res) => {
 // DELETE /products/:id/image
 router.delete('/:id/image', verifyToken, async (req, res) => {
   try {
-    const result = await db.query(
-      `UPDATE products SET image_url = NULL WHERE id = $1 AND user_id = $2 RETURNING id`,
+    const r = await db.query(
+      'UPDATE products SET image_url = NULL WHERE id = $1 AND user_id = $2 RETURNING id',
       [req.params.id, req.user.id]
     );
-    if (!result.rows.length) return res.status(404).json({ error: 'Produit introuvable' });
+    if (!r.rows.length) return res.status(404).json({ error: 'Produit introuvable' });
     res.json({ message: 'Image supprimée' });
   } catch (err) {
     console.error('DELETE /products/:id/image:', err.message);
