@@ -5,6 +5,7 @@ const express = require('express');
 const router  = express.Router();
 const db      = require('../db');
 const verify  = require('../middleware/auth');
+const requirePlan = require('../middleware/checkSubscription');
 
 // ─── GET /livraisons ─── Liste toutes les livraisons fournisseurs
 router.get('/', verify, async (req, res) => {
@@ -65,7 +66,7 @@ router.get('/:id', verify, async (req, res) => {
 });
 
 // ─── POST /livraisons ─── Créer une livraison liée à une commande fournisseur
-router.post('/', verify, async (req, res) => {
+router.post('/', verify, requirePlan('livraisons'), async (req, res) => {
   try {
     const { commande_id, tracking_note } = req.body;
 
@@ -90,7 +91,7 @@ router.post('/', verify, async (req, res) => {
 });
 
 // ─── PATCH /livraisons/:id ─── Mettre à jour statut / note
-router.patch('/:id', verify, async (req, res) => {
+router.patch('/:id', verify, requirePlan('livraisons'), async (req, res) => {
   try {
     const allowed = ['status', 'tracking_note', 'delivered_at'];
     const set = [], values = [];
@@ -121,7 +122,7 @@ router.patch('/:id', verify, async (req, res) => {
 });
 
 // ─── DELETE /livraisons/:id ───
-router.delete('/:id', verify, async (req, res) => {
+router.delete('/:id', verify, requirePlan('livraisons'), async (req, res) => {
   try {
     const { rows } = await db.query(
       'DELETE FROM restock_deliveries WHERE id = $1 AND user_id = $2 RETURNING *',
