@@ -26,7 +26,7 @@ router.get('/', verifyToken, async (req, res) => {
       SELECT s.*, p.name AS product_name
       FROM sales s
       JOIN products p ON s.product_id = p.id
-      WHERE s.user_id = $1
+      WHERE (s.boutique_id = $1 OR (s.boutique_id IS NULL AND s.user_id = $1))
         ${dateClause}
         ${cursorClause}
       ORDER BY s.created_at DESC
