@@ -3,6 +3,7 @@ const express    = require('express');
 const router     = express.Router();
 const db         = require('../db');
 const verifyToken = require('../middleware/auth');
+const requirePlan = require('../middleware/checkSubscription');
 
 // ── GET /returns ── Historique des retours
 router.get('/', verifyToken, async (req, res) => {
@@ -24,7 +25,7 @@ router.get('/', verifyToken, async (req, res) => {
 });
 
 // ── POST /returns ── Enregistrer un retour
-router.post('/', verifyToken, async (req, res) => {
+router.post('/', verifyToken, requirePlan('credits'), async (req, res) => {
   const { sale_id, quantity, reason, refund_method } = req.body;
 
   if (!sale_id || !quantity) {
