@@ -3,8 +3,10 @@ const router = express.Router();
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const pool = require("../db");
-const sendEmail = require("../utils/mailer");
+const { sendEmail, emailBienvenuePremium } = require('../utils/mailer');
 const crypto = require('crypto');
+const { PLANS, PAID_PLANS }    = require('../middleware/planConfig');
+const { invalidatePlanCache }  = require('../middleware/checkSubscription');
 
 // -- Rate limiter inline (max 10 tentatives / IP / 15 min) --
 const _rlMap = new Map();
