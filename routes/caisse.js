@@ -7,9 +7,10 @@ const router     = express.Router();
 const db         = require('../db');
 const verifyToken = require('../middleware/auth');
 const perm        = require('../middleware/checkPermission');
+const requirePlan = require('../middleware/checkSubscription');
  
 // ── GET /caisse/today ── Données de caisse du jour
-router.get('/today', verifyToken, perm('caisse'), async (req, res) => {
+router.get('/today', verifyToken, perm('caisse'), requirePlan('caisse'), async (req, res) => {
   try {
     const { rows } = await db.query(`
       SELECT
@@ -45,7 +46,7 @@ router.get('/today', verifyToken, perm('caisse'), async (req, res) => {
 });
  
 // ── POST /caisse/close ── Enregistrer une clôture
-router.post('/close', verifyToken, perm('caisse'), async (req, res) => {
+router.post('/close', verifyToken, perm('caisse'), requirePlan('caisse'), async (req, res) => {
   try {
     const { rows: data } = await db.query(`
       SELECT
@@ -86,7 +87,7 @@ router.post('/close', verifyToken, perm('caisse'), async (req, res) => {
 });
  
 // ── GET /caisse/history ── Historique des clôtures
-router.get('/history', verifyToken, perm('caisse'), async (req, res) => {
+router.get('/history', verifyToken, perm('caisse'), requirePlan('caisse'), async (req, res) => {
   try {
     const { rows } = await db.query(
       'SELECT * FROM caisse_closings WHERE user_id = $1 ORDER BY date DESC LIMIT 30',
@@ -105,7 +106,7 @@ router.get('/history', verifyToken, perm('caisse'), async (req, res) => {
 // ═══════════════════════════════════════════════════════════
 
 // ── GET /caisse/weekly ── 7 derniers jours depuis les ventes
-router.get('/weekly', verifyToken, perm('caisse'), async (req, res) => {
+router.get('/weekly', verifyToken, perm('caisse'), requirePlan('caisse'), async (req, res) => {
   try {
     const { rows } = await db.query(`
       SELECT
