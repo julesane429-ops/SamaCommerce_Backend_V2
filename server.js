@@ -87,6 +87,7 @@ app.use('/customer-orders', customerOrdersRoutes);
 app.use('/deliveries',      deliveriesRoutes);
 app.use('/deliverymen',     deliverymenRoutes);
 app.use('/push',            require('./routes/push'));
+app.use('/boutiques',        require('./routes/boutiques'));
 
 // Servir les fichiers statiques
 app.use(express.static(path.join(process.cwd())));
