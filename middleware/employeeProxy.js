@@ -21,10 +21,10 @@ async function employeeProxy(req, res, next) {
   if (!req.user?.id) return next();
 
   // Les routes /members gèrent elles-mêmes realId vs boutiqueId
-  // Ne pas les proxifier pour éviter de casser /members/my-boutique et /members/accept
-  if (req.path && req.path.startsWith('/members')) return next();
-  // Même chose pour /auth (refresh, verify-2fa, etc.)
-  if (req.path && req.path.startsWith('/auth')) return next();
+  // Utiliser originalUrl (chemin complet) car req.path peut être relatif selon le contexte
+  const fullPath = req.originalUrl || req.path || '';
+  if (fullPath.includes('/members')) return next();
+  if (fullPath.includes('/auth'))    return next();
 
   const userId = req.user.id;
 
