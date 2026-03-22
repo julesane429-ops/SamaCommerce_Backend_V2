@@ -2,10 +2,11 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const verifyToken = require('../middleware/auth');
-const perm        = require('../middleware/checkPermission');
+const perm           = require('../middleware/checkPermission');
+const requirePremium = require('../middleware/checkSubscription');
 
 // Ventes par catégorie
-router.get('/ventes-par-categorie', verifyToken, perm('rapports'), async (req, res) => {
+router.get('/ventes-par-categorie', verifyToken, perm('rapports'), requirePremium, async (req, res) => {
   try {
     const { rows } = await db.query(`
       SELECT c.name AS categorie,
