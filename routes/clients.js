@@ -1,188 +1,188 @@
-// routes/clients.js
-const express = require('express');
-const router  = express.Router();
-const db      = require('../db');
-const verify  = require('../middleware/auth');
-const perm    = require('../middleware/checkPermission');
+const express     = require('express');
+const router      = express.Router();
+const db          = require('../db');
+const verifyToken = require('../middleware/auth');
+const perm        = require('../middleware/checkPermission');
 
-// ─── GET /clients ─── Liste des clients
-router.get('/', verify, async (req, res) => {
+function clientOwner(req) {
+  return {
+    sql:    '(c.boutique_id = $1 OR (c.boutique_id IS NULL AND c.user_id = $2))',
+    params: [req.user.boutique_id, req.user.id],
+  };
+}
+
+// GET /clients
+router.get('/', verifyToken, perm('clients'), async (req, res) => {
   try {
-    const { rows } = await db.query(
-      `SELECT c.*,
-              COUNT(DISTINCT s.id)::int                                      AS nb_achats,
-              COALESCE(SUM(s.total), 0)::numeric                             AS total_achats,
-              COUNT(DISTINCT s.id) FILTER (WHERE s.paid = false)::int        AS credits_ouverts,
-              COALESCE(SUM(s.total) FILTER (WHERE s.paid = false), 0)        AS credits_montant
-       FROM clients c
-       LEFT JOIN sales s ON (
-         s.client_id = c.id
-         OR (s.client_id IS NULL AND s.client_name = c.name AND s.user_id = c.user_id)
-       )
-       WHERE c.user_id = $1
-       GROUP BY c.id
-       ORDER BY total_achats DESC, c.created_at DESC`,
-      [req.user.id]
-    );
+    const { sql, params } = clientOwner(req);
+    const { rows } = await db.query(`
+      SELECT c.*,
+        COALESCE((
+          SELECT SUM(s.total) FROM sales s
+          WHERE s.user_id = c.user_id
+            AND (s.client_id = c.id OR (s.client_id IS NULL AND s.client_name = c.name))
+        ), 0) AS total_achats
+      FROM clients c
+      WHERE ${sql}
+      ORDER BY c.name
+    `, params);
     res.json(rows);
   } catch (err) {
-    console.error('GET /clients:', err);
+    console.error('GET /clients:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
 
-// ─── GET /clients/:id ─── Détail + historique achats + commandes
-router.get('/:id', verify, async (req, res) => {
+// GET /clients/:id
+router.get('/:id', verifyToken, perm('clients'), async (req, res) => {
   try {
-    const { rows } = await db.query(
-      'SELECT * FROM clients WHERE id = $1 AND user_id = $2',
-      [req.params.id, req.user.id]
+    const { sql, params } = clientOwner(req);
+    const { rows: cRows } = await db.query(
+      `SELECT * FROM clients c WHERE c.id = $${params.length + 1} AND ${sql}`,
+      [...params, req.params.id]
     );
-    if (!rows.length) return res.status(404).json({ error: 'Client introuvable' });
-    const client = rows[0];
+    if (!cRows.length) return res.status(404).json({ error: 'Client introuvable' });
+    const client = cRows[0];
 
-    // Historique ventes : client_id en priorité, client_name en fallback
-    const { rows: achats } = await db.query(
-      `SELECT s.*, p.name AS product_name
-       FROM sales s
-       LEFT JOIN products p ON p.id = s.product_id
-       WHERE s.user_id = $1
-         AND (s.client_id = $2 OR (s.client_id IS NULL AND s.client_name = $3))
-       ORDER BY s.created_at DESC`,
-      [req.user.id, client.id, client.name]
-    );
+    const { rows: sales } = await db.query(`
+      SELECT s.*, p.name AS product_name FROM sales s
+      JOIN products p ON s.product_id = p.id
+      WHERE s.user_id = $1
+        AND (s.client_id = $2 OR (s.client_id IS NULL AND s.client_name = $3))
+      ORDER BY s.created_at DESC
+    `, [req.user.id, client.id, client.name]);
 
-    // Commandes clients liées
-    let commandes = [];
-    try {
-      const r = await db.query(
-        `SELECT co.*, COUNT(coi.id)::int AS nb_items
-         FROM customer_orders co
-         LEFT JOIN customer_order_items coi ON coi.order_id = co.id
-         WHERE co.client_id = $1 AND co.user_id = $2
-         GROUP BY co.id
-         ORDER BY co.created_at DESC LIMIT 10`,
-        [client.id, req.user.id]
-      );
-      commandes = r.rows;
-    } catch {} // table peut ne pas encore exister
+    const { rows: orders } = await db.query(`
+      SELECT co.* FROM customer_orders co
+      WHERE co.client_id = $1 AND co.user_id = $2
+      ORDER BY co.created_at DESC LIMIT 10
+    `, [client.id, req.user.id]);
 
-    res.json({ ...client, achats, commandes });
+    res.json({ ...client, sales, orders });
   } catch (err) {
-    console.error('GET /clients/:id:', err);
+    console.error('GET /clients/:id:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
 
-// ─── POST /clients ─── Créer un client
-router.post('/', verify, perm('clients'), async (req, res) => {
+// POST /clients
+router.post('/', verifyToken, perm('clients'), async (req, res) => {
   try {
     const { name, phone, email, address, notes } = req.body;
-    if (!name) return res.status(400).json({ error: 'Le nom est requis' });
+    if (!name?.trim()) return res.status(400).json({ error: 'Le nom est requis' });
 
-    // Vérifier doublon
-    const dup = await db.query(
-      'SELECT id FROM clients WHERE user_id = $1 AND LOWER(name) = LOWER($2)',
-      [req.user.id, name]
+    // Vérifier doublon dans cette boutique
+    const { sql, params } = clientOwner(req);
+    const { rows: dup } = await db.query(
+      `SELECT id FROM clients c WHERE LOWER(c.name) = LOWER($${params.length + 1}) AND ${sql}`,
+      [...params, name.trim()]
     );
-    if (dup.rows.length) {
-      return res.status(400).json({ error: `Un client nommé "${name}" existe déjà` });
-    }
+    if (dup.length) return res.status(409).json({ error: 'Ce client existe déjà' });
 
     const { rows } = await db.query(
       `INSERT INTO clients (user_id, boutique_id, name, phone, email, address, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [req.user.id, name, phone||null, email||null, address||null, notes||null]
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [req.user.id, req.user.boutique_id || null,
+       name.trim(), phone || null, email || null, address || null, notes || null]
     );
 
-    // Lier automatiquement les ventes existantes portant ce nom
+    // Lier les ventes anonymes existantes (même nom, même boutique)
     await db.query(
       `UPDATE sales SET client_id = $1
        WHERE user_id = $2 AND client_name = $3 AND client_id IS NULL`,
-      [rows[0].id, req.user.id, name]
-    ).catch(() => {});
+      [rows[0].id, req.user.id, name.trim()]
+    );
 
     res.status(201).json(rows[0]);
   } catch (err) {
-    console.error('POST /clients:', err);
+    console.error('POST /clients:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
 
-// ─── PATCH /clients/:id ─── Modifier un client
-router.patch('/:id', verify, perm('clients'), async (req, res) => {
+// PATCH /clients/:id
+router.patch('/:id', verifyToken, perm('clients'), async (req, res) => {
   try {
-    const fields = ['name', 'phone', 'email', 'address', 'notes'];
-    const set = [], values = [];
+    const fields  = ['name', 'phone', 'email', 'address', 'notes'];
+    const set     = [];
+    const values  = [];
     let i = 1;
+
     for (const f of fields) {
-      if (req.body.hasOwnProperty(f)) {
-        set.push(`${f} = $${i++}`);
+      if (Object.prototype.hasOwnProperty.call(req.body, f)) {
         values.push(req.body[f]);
+        set.push(`${f} = $${i++}`);
       }
     }
-    if (!set.length) return res.status(400).json({ error: 'Aucun champ à modifier' });
+    if (!set.length) return res.status(400).json({ error: 'Aucun champ à mettre à jour' });
 
-    values.push(req.params.id, req.user.id);
+    const { sql, params } = clientOwner(req);
+    // Re-alias params pour éviter conflit de numéros
+    const idIdx    = i++;
+    const bIdx     = i++;
+    const uIdx     = i;
+
     const { rows } = await db.query(
       `UPDATE clients SET ${set.join(', ')}
-       WHERE id = $${i++} AND user_id = $${i} RETURNING *`,
-      values
+       WHERE id = $${idIdx}
+         AND (boutique_id = $${bIdx} OR (boutique_id IS NULL AND user_id = $${uIdx}))
+       RETURNING *`,
+      [...values, req.params.id, req.user.boutique_id, req.user.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Client introuvable' });
     res.json(rows[0]);
   } catch (err) {
-    console.error('PATCH /clients/:id:', err);
+    console.error('PATCH /clients/:id:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
 
-// ─── DELETE /clients/:id ─── Supprimer un client
-router.delete('/:id', verify, perm('clients'), async (req, res) => {
+// DELETE /clients/:id
+router.delete('/:id', verifyToken, perm('clients'), async (req, res) => {
   try {
-    // Délier les ventes (le champ client_name reste pour la trace)
-    await db.query(
-      'UPDATE sales SET client_id = NULL WHERE client_id = $1 AND user_id = $2',
-      [req.params.id, req.user.id]
-    ).catch(() => {});
-
+    const { sql, params } = clientOwner(req);
     const { rows } = await db.query(
-      'DELETE FROM clients WHERE id = $1 AND user_id = $2 RETURNING *',
-      [req.params.id, req.user.id]
+      `SELECT c.name FROM clients c WHERE c.id = $${params.length + 1} AND ${sql}`,
+      [...params, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Client introuvable' });
+
+    await db.query('UPDATE sales SET client_id = NULL WHERE client_id = $1 AND user_id = $2',
+      [req.params.id, req.user.id]);
+
+    await db.query('DELETE FROM clients WHERE id = $1', [req.params.id]);
+
     res.json({ message: 'Client supprimé' });
   } catch (err) {
-    console.error('DELETE /clients/:id:', err);
+    console.error('DELETE /clients/:id:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
 
-// ─── GET /clients/:id/stats ─── Stats rapides
-router.get('/:id/stats', verify, async (req, res) => {
+// GET /clients/:id/stats
+router.get('/:id/stats', verifyToken, perm('clients'), async (req, res) => {
   try {
-    const { rows: nameRows } = await db.query(
-      'SELECT name FROM clients WHERE id = $1 AND user_id = $2',
-      [req.params.id, req.user.id]
+    const { sql, params } = clientOwner(req);
+    const { rows: cRows } = await db.query(
+      `SELECT * FROM clients c WHERE c.id = $${params.length + 1} AND ${sql}`,
+      [...params, req.params.id]
     );
-    if (!nameRows.length) return res.status(404).json({ error: 'Client introuvable' });
+    if (!cRows.length) return res.status(404).json({ error: 'Client introuvable' });
+    const client = cRows[0];
 
-    const { rows } = await db.query(
-      `SELECT
-         COUNT(*)::int                                                       AS nb_achats,
-         COALESCE(SUM(total), 0)::numeric                                    AS ca_total,
-         COALESCE(SUM(total) FILTER (WHERE paid = true),  0)::numeric        AS ca_encaisse,
-         COALESCE(SUM(total) FILTER (WHERE paid = false), 0)::numeric        AS credits_ouverts,
-         COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days')::int AS achats_30j,
-         MAX(created_at)                                                     AS dernier_achat
-       FROM sales
-       WHERE user_id = $1
-         AND (client_id = $2 OR (client_id IS NULL AND client_name = $3))`,
-      [req.user.id, req.params.id, nameRows[0].name]
-    );
-    res.json(rows[0]);
+    const { rows } = await db.query(`
+      SELECT
+        COUNT(*)::int                                         AS nb_achats,
+        COALESCE(SUM(s.total), 0)::numeric                   AS total_depense,
+        COUNT(*) FILTER (WHERE s.paid = false)::int           AS nb_credits,
+        COALESCE(SUM(s.total) FILTER (WHERE s.paid = false), 0)::numeric AS montant_credit
+      FROM sales s
+      WHERE s.user_id = $1
+        AND (s.client_id = $2 OR (s.client_id IS NULL AND s.client_name = $3))
+    `, [req.user.id, client.id, client.name]);
+    res.json({ ...rows[0], client_name: client.name });
   } catch (err) {
-    console.error('GET /clients/:id/stats:', err);
+    console.error('GET /clients/:id/stats:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
