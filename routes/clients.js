@@ -3,6 +3,7 @@ const express = require('express');
 const router  = express.Router();
 const db      = require('../db');
 const verify  = require('../middleware/auth');
+const perm    = require('../middleware/checkPermission');
 
 // ─── GET /clients ─── Liste des clients
 router.get('/', verify, async (req, res) => {
@@ -74,7 +75,7 @@ router.get('/:id', verify, async (req, res) => {
 });
 
 // ─── POST /clients ─── Créer un client
-router.post('/', verify, async (req, res) => {
+router.post('/', verify, perm('clients'), async (req, res) => {
   try {
     const { name, phone, email, address, notes } = req.body;
     if (!name) return res.status(400).json({ error: 'Le nom est requis' });
@@ -109,7 +110,7 @@ router.post('/', verify, async (req, res) => {
 });
 
 // ─── PATCH /clients/:id ─── Modifier un client
-router.patch('/:id', verify, async (req, res) => {
+router.patch('/:id', verify, perm('clients'), async (req, res) => {
   try {
     const fields = ['name', 'phone', 'email', 'address', 'notes'];
     const set = [], values = [];
@@ -137,7 +138,7 @@ router.patch('/:id', verify, async (req, res) => {
 });
 
 // ─── DELETE /clients/:id ─── Supprimer un client
-router.delete('/:id', verify, async (req, res) => {
+router.delete('/:id', verify, perm('clients'), async (req, res) => {
   try {
     // Délier les ventes (le champ client_name reste pour la trace)
     await db.query(
