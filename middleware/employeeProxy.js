@@ -56,7 +56,13 @@ async function employeeProxy(req, res, next) {
       return next();
     }
 
-    const { boutique_id, permissions, role } = rows[0];
+    const { boutique_id, role } = rows[0];
+    // Normaliser permissions en objet (JSONB → objet, TEXT → string à parser)
+    let permissions = rows[0].permissions;
+    if (typeof permissions === 'string') {
+      try { permissions = JSON.parse(permissions); } catch { permissions = {}; }
+    }
+    permissions = permissions || {};
 
     // Stocker en cache
     cache.set(userId, {
