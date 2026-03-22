@@ -56,6 +56,10 @@ app.use(express.json());
 // Proxy employé : maintenant intégré dans middleware/auth.js (verifyToken)
 // Supprimé d'ici pour éviter qu'il tourne avant le décodage JWT
 
+// Contexte boutique : injecte req.user.boutique_id sur toutes les requêtes
+const boutiqueContext = require('./middleware/boutiqueContext');
+app.use(boutiqueContext);
+
 // ══════════════════════════════════════
 // ROUTES EXISTANTES
 // ══════════════════════════════════════
