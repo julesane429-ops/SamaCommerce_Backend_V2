@@ -29,8 +29,8 @@ router.get('/:id', verifyToken, async (req, res) => {
     const productId = req.params.id;
 
     const result = await db.query(
-      'SELECT * FROM products WHERE id = $1 AND user_id = $2',
-      [productId, userId]
+      `SELECT * FROM products WHERE id = $1 AND (boutique_id = $2 OR (boutique_id IS NULL AND user_id = $2))`,
+      [productId, req.user.boutique_id || userId]
     );
 
     if (result.rows.length === 0) {
@@ -152,8 +152,8 @@ router.patch('/:id', verifyToken, perm('stock'), async (req, res) => {
 router.delete('/:id', verifyToken, perm('stock'), async (req, res) => {
   try {
     const result = await db.query(
-      'DELETE FROM products WHERE id = $1 AND user_id = $2 RETURNING *',
-      [req.params.id, req.user.id]
+      `DELETE FROM products WHERE id = $1 AND (boutique_id = $2 OR (boutique_id IS NULL AND user_id = $2)) RETURNING *`,
+      [req.params.id, req.user.boutique_id || req.user.id]
     );
 
     if (result.rows.length === 0) {
@@ -171,9 +171,9 @@ router.delete('/:id/image', verifyToken, async (req, res) => {
   try {
     const result = await db.query(
       `UPDATE products SET image_url = NULL
-       WHERE id = $1 AND user_id = $2
+       WHERE id = $1 AND (boutique_id = $2 OR (boutique_id IS NULL AND user_id = $2))
        RETURNING id`,
-      [req.params.id, req.user.id]
+      [req.params.id, req.user.boutique_id || req.user.id]
     );
     if (!result.rows.length) return res.status(404).json({ error: 'Produit introuvable' });
     res.json({ message: 'Image supprimée' });
