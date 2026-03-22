@@ -95,6 +95,7 @@ app.use(express.static(path.join(process.cwd())));
 // CRON ABONNEMENTS — toutes les nuits à minuit
 // ══════════════════════════════════════
 const { sendEmail, emailRappel7J, emailRappel3J, emailExpiration } = require('./utils/mailer');
+const { invalidatePlanCache } = require('./middleware/checkSubscription');
 
 cron.schedule('0 0 * * *', async () => {
   console.log('⏰ Cron abonnements: démarrage...');
@@ -147,13 +148,14 @@ cron.schedule('0 0 * * *', async () => {
         AND expiration::date < CURRENT_DATE
     `);
     for (const u of expired.rows) {
-      // Rétrograder en Free
+      // Rétrograder en Free + invalider le cache plan
       await pool.query(
         `UPDATE users
          SET plan = 'Free', upgrade_status = 'expiré', payment_status = 'Expiré'
          WHERE id = $1`,
         [u.id]
       );
+      invalidatePlanCache(u.id);
       // Email d'expiration
       const { subject, html } = emailExpiration(u);
       await sendEmail(u.username, subject, html);
