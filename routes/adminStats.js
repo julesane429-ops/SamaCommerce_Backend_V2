@@ -33,13 +33,13 @@ router.get("/revenus", verifyToken, isAdmin, async (req, res) => {
     const balQ = await db.query(
       `SELECT COALESCE(SUM(amount),0) AS balance
        FROM users
-       WHERE plan = 'Premium' AND upgrade_status = 'validé'`
+       WHERE plan IN ('Starter','Pro','Business','Enterprise') AND upgrade_status = 'validé'`
     );
 
     const periodQ = await db.query(
       `SELECT COALESCE(SUM(amount),0) AS period_total
        FROM users
-       WHERE plan = 'Premium' AND upgrade_status = 'validé' ${
+       WHERE plan IN ('Starter','Pro','Business','Enterprise') AND upgrade_status = 'validé' ${
          period === "all" ? "" : periodFilter
        }`
     );
@@ -47,7 +47,7 @@ router.get("/revenus", verifyToken, isAdmin, async (req, res) => {
     const pendingQ = await db.query(
       `SELECT COALESCE(SUM(amount),0) AS pending
        FROM users
-       WHERE plan = 'Premium' AND upgrade_status = 'en attente'`
+       WHERE plan IN ('Starter','Pro','Business','Enterprise') AND upgrade_status = 'en attente'`
     );
 
     res.json({
@@ -72,7 +72,7 @@ router.get("/transactions", verifyToken, isAdmin, async (req, res) => {
     const q = await db.query(
       `SELECT id, username, plan, amount, payment_method, upgrade_status, expiration, created_at
        FROM users
-       WHERE plan = 'Premium'
+       WHERE plan IN ('Starter','Pro','Business','Enterprise')
        ORDER BY expiration DESC NULLS LAST
        LIMIT $1`,
       [limit]
@@ -93,7 +93,7 @@ router.get("/accounts", verifyToken, isAdmin, async (req, res) => {
     const payQ = await db.query(
       `SELECT payment_method, COALESCE(SUM(amount),0) AS total
        FROM users
-       WHERE plan = 'Premium' AND upgrade_status = 'validé'
+       WHERE plan IN ('Starter','Pro','Business','Enterprise') AND upgrade_status = 'validé'
        GROUP BY payment_method`
     );
     const accounts = { orange: 0, wave: 0, cash: 0 };
@@ -128,7 +128,7 @@ router.get("/accounts", verifyToken, isAdmin, async (req, res) => {
     const entriesQ = await db.query(
       `SELECT COALESCE(SUM(amount),0) AS total
        FROM users
-       WHERE plan = 'Premium'
+       WHERE plan IN ('Starter','Pro','Business','Enterprise')
          AND upgrade_status = 'validé'
          AND DATE(created_at) = CURRENT_DATE`
     );
@@ -161,7 +161,7 @@ router.get("/accounts/:method", verifyToken, isAdmin, async (req, res) => {
     const subs = await db.query(
       `SELECT username, amount, payment_method, expiration, created_at
        FROM users
-       WHERE plan = 'Premium' AND upgrade_status = 'validé' AND payment_method = $1
+       WHERE plan IN ('Starter','Pro','Business','Enterprise') AND upgrade_status = 'validé' AND payment_method = $1
        ORDER BY expiration DESC NULLS LAST LIMIT 50`,
       [method]
     );
@@ -203,7 +203,7 @@ router.get("/revenus/evolution", verifyToken, isAdmin, async (req, res) => {
          TO_CHAR(DATE_TRUNC('month', expiration), 'YYYY-MM') AS mois,
          COALESCE(SUM(amount),0) AS total
        FROM users
-       WHERE plan = 'Premium'
+       WHERE plan IN ('Starter','Pro','Business','Enterprise')
          AND upgrade_status = 'validé'
          AND expiration IS NOT NULL
          AND DATE_PART('year', expiration) = DATE_PART('year', CURRENT_DATE)
@@ -227,7 +227,7 @@ router.get("/overview", verifyToken, isAdmin, async (req, res) => {
     const activePremiumQ = await db.query(
       `SELECT COUNT(*) AS total
        FROM users
-       WHERE plan = 'Premium'
+       WHERE plan IN ('Starter','Pro','Business','Enterprise')
          AND upgrade_status = 'validé'
          AND (expiration IS NULL OR expiration >= CURRENT_DATE)`
     );
@@ -235,24 +235,24 @@ router.get("/overview", verifyToken, isAdmin, async (req, res) => {
     const revenuesQ = await db.query(
       `SELECT COALESCE(SUM(amount),0) AS total
        FROM users
-       WHERE plan = 'Premium' AND upgrade_status = 'validé'
+       WHERE plan IN ('Starter','Pro','Business','Enterprise') AND upgrade_status = 'validé'
          AND created_at <= CURRENT_DATE`
     );
 
     const pendingQ = await db.query(
       `SELECT COUNT(*) AS total
        FROM users
-       WHERE plan = 'Premium' AND upgrade_status = 'en attente'`
+       WHERE plan IN ('Starter','Pro','Business','Enterprise') AND upgrade_status = 'en attente'`
     );
 
     const currentQ = await db.query(`
       SELECT
         (SELECT COUNT(*) FROM users) AS total_users,
         (SELECT COUNT(*) FROM users
-         WHERE plan = 'Premium' AND upgrade_status = 'validé'
+         WHERE plan IN ('Starter','Pro','Business','Enterprise') AND upgrade_status = 'validé'
            AND (expiration IS NULL OR expiration >= CURRENT_DATE)) AS active_premium,
         (SELECT COALESCE(SUM(amount),0) FROM users
-         WHERE plan = 'Premium' AND upgrade_status = 'validé'
+         WHERE plan IN ('Starter','Pro','Business','Enterprise') AND upgrade_status = 'validé'
            AND created_at <= CURRENT_DATE) AS revenues
     `);
 
@@ -261,10 +261,10 @@ router.get("/overview", verifyToken, isAdmin, async (req, res) => {
         (SELECT COUNT(*) FROM users
          WHERE created_at < DATE_TRUNC('month', CURRENT_DATE)) AS total_users,
         (SELECT COUNT(*) FROM users
-         WHERE plan = 'Premium' AND upgrade_status = 'validé'
+         WHERE plan IN ('Starter','Pro','Business','Enterprise') AND upgrade_status = 'validé'
            AND (expiration IS NULL OR expiration >= DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '1 day')) AS active_premium,
         (SELECT COALESCE(SUM(amount),0) FROM users
-         WHERE plan = 'Premium' AND upgrade_status = 'validé'
+         WHERE plan IN ('Starter','Pro','Business','Enterprise') AND upgrade_status = 'validé'
            AND created_at < DATE_TRUNC('month', CURRENT_DATE)) AS revenues
     `);
 
