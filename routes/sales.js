@@ -4,26 +4,38 @@ const db = require('../db');
 const verifyToken = require('../middleware/auth');
 const perm        = require('../middleware/checkPermission');
 
-// ✅ GET toutes les ventes
+// ✅ GET ventes avec pagination et filtre de date
+// Params : ?limit=200&days=90&page=1&cursor=<last_id>
 router.get('/', verifyToken, async (req, res) => {
   try {
-    const page   = Math.max(1, parseInt(req.query.page  || '1'));
-    const limit  = req.query.limit ? Math.min(500, Math.max(1, parseInt(req.query.limit))) : 0;
-    const offset = limit > 0 ? (page - 1) * limit : 0;
-    const limitClause = limit > 0 ? `LIMIT ${limit} OFFSET ${offset}` : '';
- 
+    const page   = Math.max(1, parseInt(req.query.page || '1'));
+    const limit  = Math.min(500, Math.max(1, parseInt(req.query.limit || '200')));
+    const offset = (page - 1) * limit;
+
+    // Filtre optionnel par nombre de jours (ex: ?days=90 → 90 derniers jours)
+    const days       = parseInt(req.query.days || '0');
+    const dateClause = days > 0
+      ? `AND s.created_at >= NOW() - INTERVAL '${days} days'`
+      : '';
+
+    // Curseur pour pagination infinie (ex: ?cursor=<id_dernière_vente>)
+    const cursor       = parseInt(req.query.cursor || '0');
+    const cursorClause = cursor > 0 ? `AND s.id < ${cursor}` : '';
+
     const result = await db.query(`
       SELECT s.*, p.name AS product_name
       FROM sales s
       JOIN products p ON s.product_id = p.id
       WHERE s.user_id = $1
+        ${dateClause}
+        ${cursorClause}
       ORDER BY s.created_at DESC
-      ${limitClause}
-    `, [req.user.id]);
- 
+      LIMIT $2 OFFSET $3
+    `, [req.user.id, limit, offset]);
+
     res.json(result.rows);
   } catch (err) {
-    console.error("Erreur GET /sales :", err.message);
+    console.error('Erreur GET /sales :', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
