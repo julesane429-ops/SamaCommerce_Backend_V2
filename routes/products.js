@@ -11,8 +11,8 @@ router.get('/', verifyToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const result = await db.query(
-      'SELECT * FROM products WHERE user_id = $1 ORDER BY id DESC',
-      [userId]
+      `SELECT * FROM products WHERE ${req.user.boutique_id ? 'boutique_id' : 'user_id'} = $1 ORDER BY id DESC`,
+      [req.user.boutique_id || userId]
     );
 
     res.json(result.rows);
@@ -64,8 +64,8 @@ router.post('/', verifyToken, perm('stock'), async (req, res) => {
 
       if (limit !== Infinity) {
         const countRow = await db.query(
-          'SELECT COUNT(*)::int AS cnt FROM products WHERE user_id = $1',
-          [userId]
+          `SELECT COUNT(*)::int AS cnt FROM products WHERE ${req.user.boutique_id ? 'boutique_id' : 'user_id'} = $1`,
+          [req.user.boutique_id || userId]
         );
         if (countRow.rows[0].cnt >= limit) {
           return res.status(403).json({
