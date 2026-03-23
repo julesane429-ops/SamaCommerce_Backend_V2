@@ -27,7 +27,7 @@ router.patch('/:id/seen', verify, async (req, res) => {
   try {
     const { sql, p } = bf(req, 'a');
     const { rows } = await db.query(
-      `UPDATE alerts a SET seen = true WHERE a.id = $3 AND ${sql} RETURNING *`,
+      `UPDATE alerts a SET seen = true WHERE a.id = $${p.length+1} AND ${sql} RETURNING *`,
       [...p, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Alerte introuvable' });
@@ -43,7 +43,7 @@ router.patch('/:id/ignore', verify, async (req, res) => {
   try {
     const { sql, p } = bf(req, 'a');
     const { rows } = await db.query(
-      `UPDATE alerts a SET ignored = true WHERE a.id = $3 AND ${sql} RETURNING *`,
+      `UPDATE alerts a SET ignored = true WHERE a.id = $${p.length+1} AND ${sql} RETURNING *`,
       [...p, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Alerte introuvable' });
@@ -59,7 +59,7 @@ router.delete('/:id', verify, async (req, res) => {
   try {
     const { sql, p } = bf(req, 'a');
     const { rows } = await db.query(
-      `UPDATE alerts a SET archived = true WHERE a.id = $3 AND ${sql} RETURNING *`,
+      `UPDATE alerts a SET archived = true WHERE a.id = $${p.length+1} AND ${sql} RETURNING *`,
       [...p, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Alerte introuvable' });
