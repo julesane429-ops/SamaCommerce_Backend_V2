@@ -1,19 +1,10 @@
 // middleware/boutiqueContext.js
-// ─────────────────────────────────────────────────────────────
-// Injecte req.user.boutique_id dans chaque requête.
-//
-// Pour un propriétaire :
-//   Lit l'en-tête X-Boutique-Id ou utilise la boutique primaire.
-//
-// Pour un employé :
-//   employeeProxy a déjà fixé req.user.boutique_id = ref_boutique_id.
-//   Ce middleware NE L'ÉCRASE PAS — isolation garantie.
-// ─────────────────────────────────────────────────────────────
+// Boutique principale → req.user.boutique_id = null → toutes les données (cumul)
+// Boutique secondaire → req.user.boutique_id = boutiques.id → filtre isolé
 
 const db = require('../db');
 
-// Cache boutique primaire: owner_id → { id, expiresAt }
-const _primaryCache = new Map();
+const _primaryCache = new Map(); // ownerId → { id, expiresAt }
 const CACHE_TTL = 5 * 60 * 1000;
 
 async function getPrimaryBoutiqueId(ownerId) {
@@ -26,10 +17,8 @@ async function getPrimaryBoutiqueId(ownerId) {
   );
 
   if (!rows.length) {
-    // Créer automatiquement une boutique primaire si absente
     const userRow = await db.query(
-      'SELECT company_name, username, phone FROM users WHERE id = $1',
-      [ownerId]
+      'SELECT company_name, username, phone FROM users WHERE id = $1', [ownerId]
     );
     const u = userRow.rows[0] || {};
     const ins = await db.query(
@@ -53,32 +42,32 @@ async function boutiqueContext(req, res, next) {
   const path = req.originalUrl || '';
   if (path.includes('/auth') || path.includes('/admin')) return next();
 
-  // ✅ Si employeeProxy a déjà positionné boutique_id (employé assigné à une boutique),
-  //    on ne l'écrase JAMAIS — c'est la garantie d'isolation par boutique.
-  if (req.user.boutique_id) return next();
+  // Employé → boutique_id déjà fixé par employeeProxy, ne pas écraser
+  if (req.user.boutique_id !== undefined) return next();
 
   try {
-    const ownerId = req.user.id;
-
-    // Le propriétaire peut demander une boutique spécifique via l'en-tête
+    const ownerId     = req.user.id;
     const requestedId = parseInt(req.headers['x-boutique-id'] || '0');
 
     if (requestedId) {
       const { rows } = await db.query(
-        'SELECT id FROM boutiques WHERE id = $1 AND owner_id = $2',
+        'SELECT id, is_primary FROM boutiques WHERE id = $1 AND owner_id = $2',
         [requestedId, ownerId]
       );
       if (rows.length) {
-        req.user.boutique_id = requestedId;
+        // ✅ Boutique principale → null = vue cumulative (toutes les boutiques)
+        // ✅ Boutique secondaire → filtrage isolé par boutique_id
+        req.user.boutique_id = rows[0].is_primary ? null : requestedId;
         return next();
       }
     }
 
-    // Fallback : boutique primaire
-    req.user.boutique_id = await getPrimaryBoutiqueId(ownerId);
+    // Pas de X-Boutique-Id → vue cumulative par défaut (toutes boutiques)
+    req.user.boutique_id = null;
+
   } catch (err) {
     console.error('boutiqueContext:', err.message);
-    // fail-open
+    req.user.boutique_id = null;
   }
 
   next();
