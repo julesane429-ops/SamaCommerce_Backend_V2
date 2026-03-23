@@ -1,17 +1,21 @@
 /**
- * boutiqueFilter.js
+ * boutiqueFilter.js — WHERE clause helper d'isolation par boutique
  *
- * TOUJOURS retourne p avec exactement 2 éléments :
- *   p[0] = bid (null si boutique principale)
- *   p[1] = uid
+ * Retourne TOUJOURS p avec 2 éléments : [bid_or_null, uid]
+ * Toutes les routes peuvent donc utiliser $3 pour leur propre paramètre.
  *
- * Cela permet à toutes les routes d'utiliser $3 pour leur propre
- * paramètre (id, etc.) sans calculer la position dynamiquement.
+ * MAIS pour éviter tout problème pg avec $1=null inutilisé,
+ * on construit le SQL pour n'utiliser que les params réellement passés :
  *
- * Null boutique (Pro / boutique principale) :
- *   sql = "alias.user_id = $2"   ($1 = null, ignoré)
- * Boutique secondaire (Enterprise) :
- *   sql = "(alias.boutique_id = $1 OR (alias.boutique_id IS NULL AND alias.user_id = $2))"
+ * Boutique principale (bid=null) :
+ *   sql = "alias.user_id = $1"   p = [uid]  (1 élément)
+ *   Les routes doivent utiliser p.length+1 pour leur propre param
+ *
+ * Boutique secondaire (bid=N) :
+ *   sql = "(alias.boutique_id=$1 OR (alias.boutique_id IS NULL AND alias.user_id=$2))"
+ *   p = [bid, uid]  (2 éléments)
+ *
+ * Helper positionnel : bf.pos(req) → position du prochain param après p
  */
 function boutiqueFilter(req, alias = '') {
   const px  = alias ? `${alias}.` : '';
@@ -19,22 +23,21 @@ function boutiqueFilter(req, alias = '') {
   const bid = req.user.boutique_id || null;
 
   if (!bid) {
-    // Boutique principale : filtre par user_id uniquement
-    // p[0] = null (placeholder), p[1] = uid → toujours 2 éléments
     return {
-      sql: `${px}user_id = $2`,
-      p:   [null, uid],
-      bid: null,
+      sql:  `${px}user_id = $1`,
+      p:    [uid],
+      bid:  null,
       uid,
+      next: 2,   // prochain $ disponible après p
     };
   }
 
-  // Boutique secondaire : filtre par boutique_id avec fallback user_id (legacy)
   return {
-    sql: `(${px}boutique_id = $1 OR (${px}boutique_id IS NULL AND ${px}user_id = $2))`,
-    p:   [bid, uid],
+    sql:  `(${px}boutique_id = $1 OR (${px}boutique_id IS NULL AND ${px}user_id = $2))`,
+    p:    [bid, uid],
     bid,
     uid,
+    next: 3,   // prochain $ disponible après p
   };
 }
 
