@@ -33,7 +33,7 @@ router.get('/:id', verify, perm('clients'), async (req, res) => {
   try {
     const { sql, p } = bf(req, 'c');
     const { rows } = await db.query(
-      `SELECT * FROM clients c WHERE c.id = $3 AND ${sql}`,
+      `SELECT * FROM clients c WHERE c.id = $${p.length+1} AND ${sql}`,
       [...p, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Client introuvable' });
@@ -74,7 +74,7 @@ router.post('/', verify, perm('clients'), async (req, res) => {
 
     const { sql, p, bid, uid } = bf(req, 'c');
     const { rows: dup } = await db.query(
-      `SELECT id FROM clients c WHERE LOWER(c.name) = LOWER($3) AND ${sql}`,
+      `SELECT id FROM clients c WHERE LOWER(c.name) = LOWER($${p.length+1}) AND ${sql}`,
       [...p, name]
     );
     if (dup.length) return res.status(400).json({ error: `Un client nommé "${name}" existe déjà` });
@@ -129,7 +129,7 @@ router.delete('/:id', verify, perm('clients'), async (req, res) => {
   try {
     const { sql, p } = bf(req, 'c');
     const { rows } = await db.query(
-      `SELECT id FROM clients c WHERE c.id=$3 AND ${sql}`,
+      `SELECT id FROM clients c WHERE c.id=$${p.length+1} AND ${sql}`,
       [...p, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Client introuvable' });
@@ -150,7 +150,7 @@ router.get('/:id/stats', verify, async (req, res) => {
   try {
     const { sql, p } = bf(req, 'c');
     const { rows: cRows } = await db.query(
-      `SELECT name FROM clients c WHERE c.id=$3 AND ${sql}`, [...p, req.params.id]
+      `SELECT name FROM clients c WHERE c.id=$${p.length+1} AND ${sql}`, [...p, req.params.id]
     );
     if (!cRows.length) return res.status(404).json({ error: 'Client introuvable' });
 
