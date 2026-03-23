@@ -90,11 +90,11 @@ router.patch('/:id', verify, requirePlan('commandes'), async (req, res) => {
       if (Object.prototype.hasOwnProperty.call(req.body, f)) { set.push(`${f}=$${i++}`); values.push(req.body[f]); }
     }
     if (!set.length) return res.status(400).json({ error: 'Aucun champ' });
-    const { p } = bf(req);
-    values.push(req.params.id, p[0], p[1]);
+    const { uid } = bf(req);
+    values.push(req.params.id, uid);
     const { rows } = await db.query(
       `UPDATE restock_orders SET ${set.join(',')}
-       WHERE id=$${i} AND (boutique_id=$${i+1} OR (boutique_id IS NULL AND user_id=$${i+2})) RETURNING *`,
+       WHERE id=${i} AND user_id=${i+1} RETURNING *`,
       values
     );
     if (!rows.length) return res.status(404).json({ error: 'Commande introuvable' });
