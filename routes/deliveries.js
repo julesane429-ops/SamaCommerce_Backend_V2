@@ -44,7 +44,7 @@ router.get('/:id', verifyToken, async (req, res) => {
       JOIN customer_orders co ON d.order_id = co.id
       LEFT JOIN clients     c  ON co.client_id     = c.id
       LEFT JOIN deliverymen dm ON d.deliveryman_id = dm.id
-      WHERE d.id=$3 AND ${sql}
+      WHERE d.id=$${p.length+1} AND ${sql}
     `, [...p, req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Livraison introuvable' });
 
@@ -66,7 +66,7 @@ router.patch('/:id/assign', verifyToken, async (req, res) => {
   try {
     const { sql, p } = bf(req, 'd');
     const { rows } = await db.query(
-      `UPDATE deliveries d SET deliveryman_id=$3, status='assignee' WHERE d.id=$4 AND ${sql} RETURNING *`,
+      `UPDATE deliveries d SET deliveryman_id=$${p.length+1}, status='assignee' WHERE d.id=$${p.length+2} AND ${sql} RETURNING *`,
       [...p, deliveryman_id, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Livraison introuvable' });
@@ -83,7 +83,7 @@ router.patch('/:id/depart', verifyToken, async (req, res) => {
   try {
     const { sql, p } = bf(req, 'd');
     const { rows } = await db.query(
-      `UPDATE deliveries d SET status='en_route', pickup_time=NOW() WHERE d.id=$3 AND ${sql} RETURNING *`,
+      `UPDATE deliveries d SET status='en_route', pickup_time=NOW() WHERE d.id=$${p.length+1} AND ${sql} RETURNING *`,
       [...p, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Livraison introuvable' });
@@ -102,7 +102,7 @@ router.patch('/:id/livree', verifyToken, async (req, res) => {
     const { rows: del } = await dbClient.query(`
       SELECT d.*, co.client_id, co.payment_status, co.payment_method, co.total
       FROM deliveries d JOIN customer_orders co ON d.order_id=co.id
-      WHERE d.id=$3 AND ${sql}
+      WHERE d.id=$${p.length+1} AND ${sql}
     `, [...p, req.params.id]);
     if (!del.length) { await dbClient.query('ROLLBACK'); return res.status(404).json({ error: 'Livraison introuvable' }); }
     const delivery = del[0];
@@ -224,7 +224,7 @@ router2.patch('/:id', verifyToken, async (req, res) => {
 router2.delete('/:id', verifyToken, async (req, res) => {
   try {
     const { sql, p } = bf(req, 'dm');
-    const { rowCount } = await db.query(`DELETE FROM deliverymen dm WHERE dm.id=$3 AND ${sql}`, [...p, req.params.id]);
+    const { rowCount } = await db.query(`DELETE FROM deliverymen dm WHERE dm.id=$${p.length+1} AND ${sql}`, [...p, req.params.id]);
     if (!rowCount) return res.status(404).json({ error: 'Livreur introuvable' });
     res.json({ message: 'Livreur supprimé' });
   } catch (err) {
@@ -241,7 +241,7 @@ router2.get('/:id/livraisons', verifyToken, async (req, res) => {
       FROM deliveries d
       JOIN customer_orders co ON d.order_id=co.id
       LEFT JOIN clients c ON co.client_id=c.id
-      WHERE d.deliveryman_id=$3 AND ${sql}
+      WHERE d.deliveryman_id=$${p.length+1} AND ${sql}
       ORDER BY d.created_at DESC LIMIT 50
     `, [...p, req.params.id]);
     res.json(rows);
