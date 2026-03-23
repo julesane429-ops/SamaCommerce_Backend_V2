@@ -55,7 +55,7 @@ router.post('/', verifyToken, requirePlan('credits'), async (req, res) => {
 
     // Vente appartenant à cette boutique
     const { rows: sRows } = await client.query(
-      `SELECT * FROM sales s WHERE s.id = $3 AND ${sql}`,
+      `SELECT * FROM sales s WHERE s.id = $${p.length+1} AND ${sql}`,
       [...p, sale_id]
     );
     if (!sRows.length) {
