@@ -37,7 +37,7 @@ router.get('/:id', verifyToken, async (req, res) => {
     const { rows: orders } = await db.query(`
       SELECT co.*, c.name AS client_name, c.phone AS client_phone, c.address AS client_address
       FROM customer_orders co LEFT JOIN clients c ON co.client_id=c.id
-      WHERE co.id=$3 AND ${sql}
+      WHERE co.id=$${p.length+1} AND ${sql}
     `, [...p, req.params.id]);
     if (!orders.length) return res.status(404).json({ error: 'Commande introuvable' });
 
@@ -114,7 +114,7 @@ router.patch('/:id/confirm', verifyToken, async (req, res) => {
     const { sql, p, bid, uid } = bf(req, 'co');
     const { rows } = await dbClient.query(
       `UPDATE customer_orders co SET status='confirmee', confirmed_at=NOW()
-       WHERE co.id=$3 AND ${sql} AND co.status='recue' RETURNING *`,
+       WHERE co.id=$${p.length+1} AND ${sql} AND co.status='recue' RETURNING *`,
       [...p, req.params.id]
     );
     if (!rows.length) { await dbClient.query('ROLLBACK'); return res.status(404).json({ error: 'Commande introuvable ou déjà confirmée' }); }
@@ -169,7 +169,7 @@ router.delete('/:id', verifyToken, async (req, res) => {
     await dbClient.query('BEGIN');
     const { sql, p } = bf(req, 'co');
     const { rows: chk } = await dbClient.query(
-      `SELECT id FROM customer_orders co WHERE co.id=$3 AND ${sql}`, [...p, req.params.id]
+      `SELECT id FROM customer_orders co WHERE co.id=$${p.length+1} AND ${sql}`, [...p, req.params.id]
     );
     if (!chk.length) { await dbClient.query('ROLLBACK'); return res.status(404).json({ error: 'Commande introuvable' }); }
 
