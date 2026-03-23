@@ -5,12 +5,23 @@ const verifyToken = require('../middleware/auth');
 const perm        = require('../middleware/checkPermission');
 const requirePlan = require('../middleware/checkSubscription');
 
-// Helper réutilisable
+// Helper réutilisable — null-safe (même logique que boutiqueFilter.js)
 function boutique(req, alias = 's') {
-  const p = alias ? `${alias}.` : '';
+  const px  = alias ? `${alias}.` : '';
+  const uid = req.user.id;
+  const bid = req.user.boutique_id || null;
+
+  if (!bid) {
+    // Boutique principale → toutes les données de l'owner
+    return {
+      sql:    `${px}user_id = $1`,
+      params: [uid],
+    };
+  }
+  // Boutique secondaire → filtre strict avec fallback legacy
   return {
-    sql:    `(${p}boutique_id = $1 OR (${p}boutique_id IS NULL AND ${p}user_id = $2))`,
-    params: [req.user.boutique_id, req.user.id],
+    sql:    `(${px}boutique_id = $1 OR (${px}boutique_id IS NULL AND ${px}user_id = $2))`,
+    params: [bid, uid],
   };
 }
 
