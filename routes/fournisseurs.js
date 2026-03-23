@@ -77,12 +77,10 @@ router.patch('/:id', verifyToken, requirePlan('fournisseurs'), perm('fournisseur
   }
   if (!fields.length) return res.status(400).json({ error: 'Rien à modifier' });
   try {
-    const { p } = bf(req);
-    values.push(req.params.id, p[0], p[1]);
+    const { uid } = bf(req);
+    values.push(req.params.id, uid);
     const { rows } = await db.query(
-      `UPDATE fournisseurs SET ${fields.join(',')}
-       WHERE id=$${i} AND (boutique_id=$${i+1} OR (boutique_id IS NULL AND user_id=$${i+2}))
-       RETURNING *`,
+      `UPDATE fournisseurs SET ${fields.join(',')} WHERE id=$${i} AND user_id=$${i+1} RETURNING *`,
       values
     );
     if (!rows.length) return res.status(404).json({ error: 'Fournisseur introuvable' });
