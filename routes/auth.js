@@ -39,7 +39,7 @@ router.post("/register", async (req, res) => {
     username, password, company_name, phone,
     role = "user", status = "Actif", plan = "Free",
     payment_status = "À jour", payment_method,
-    expiration, amount = 0.0, upgrade_status = "validé"
+    expiration, amount = 0.0, upgrade_status = null
   } = req.body;
 
   if (!username || !password) {
