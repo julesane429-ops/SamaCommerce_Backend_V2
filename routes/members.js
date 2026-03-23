@@ -105,7 +105,7 @@ router.post('/invite', verifyToken, async (req, res) => {
     );
     if (existing[0].cnt >= membLimit) {
       return res.status(400).json({
-        error:   \`Maximum \${membLimit} membre\${membLimit > 1 ? 's' : ''} pour le plan \${planName}\`,
+        error:   `Maximum ${membLimit} membre${membLimit > 1 ? 's' : ''} pour le plan ${planName}`,
         code:    'MEMBER_LIMIT_REACHED',
         limit:   membLimit,
       });
