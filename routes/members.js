@@ -92,25 +92,32 @@ router.post('/invite', verifyToken, async (req, res) => {
       });
     }
 
+    // ✅ boutique_id dans le body = boutiques.id (multi-boutique)
+    // Quota et duplicate checks PER BOUTIQUE (pas global owner)
+    const bodyBoutiqueId = req.body.boutique_id ? parseInt(req.body.boutique_id) : null;
+    const quotaBoutiqueId = bodyBoutiqueId || req.user.id;
+
     const { rows: existing } = await db.query(
-      "SELECT COUNT(*)::int AS cnt FROM boutique_members WHERE boutique_id = $1 AND status != 'rejected'",
-      [req.user.id]
+      bodyBoutiqueId
+        ? "SELECT COUNT(*)::int AS cnt FROM boutique_members WHERE ref_boutique_id = $1 AND status != 'rejected'"
+        : "SELECT COUNT(*)::int AS cnt FROM boutique_members WHERE boutique_id = $1 AND status != 'rejected'",
+      [quotaBoutiqueId]
     );
     if (existing[0].cnt >= membLimit) {
       return res.status(400).json({
-        error:   `Maximum ${membLimit} membre${membLimit > 1 ? 's' : ''} pour le plan ${planName}`,
+        error:   \`Maximum \${membLimit} membre\${membLimit > 1 ? 's' : ''} pour le plan \${planName}\`,
         code:    'MEMBER_LIMIT_REACHED',
         limit:   membLimit,
       });
     }
 
-    // Vérifier si déjà invité
-    const dup = await db.query(
-      "SELECT id FROM boutique_members WHERE boutique_id = $1 AND email = $2",
-      [req.user.id, email]
-    );
+    // Vérifier si déjà invité dans CETTE boutique spécifiquement
+    const dupQuery = bodyBoutiqueId
+      ? "SELECT id FROM boutique_members WHERE ref_boutique_id = $1 AND email = $2"
+      : "SELECT id FROM boutique_members WHERE boutique_id = $1 AND email = $2";
+    const dup = await db.query(dupQuery, [quotaBoutiqueId, email]);
     if (dup.rows.length) {
-      return res.status(400).json({ error: 'Cet email est déjà invité' });
+      return res.status(400).json({ error: 'Cet email est déjà invité dans cette boutique' });
     }
 
     // Permissions par défaut selon le rôle
@@ -122,12 +129,26 @@ router.post('/invite', verifyToken, async (req, res) => {
     const token = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + INVITE_TTL_HOURS * 3600 * 1000);
 
-    const { rows } = await db.query(`
-      INSERT INTO boutique_members
-        (boutique_id, email, role, status, permissions, invite_token, invite_expires_at)
-      VALUES ($1, $2, $3, 'pending', $4, $5, $6)
-      RETURNING *
-    `, [req.user.id, email, role, finalPerms, token, expiresAt]);
+    // ✅ Insérer avec ref_boutique_id (boutiques.id) si fourni
+    let insertRows;
+    if (bodyBoutiqueId) {
+      const ins = await db.query(`
+        INSERT INTO boutique_members
+          (boutique_id, ref_boutique_id, owner_user_id, email, role, status, permissions, invite_token, invite_expires_at)
+        VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8)
+        RETURNING *
+      `, [req.user.id, bodyBoutiqueId, req.user.id, email, role, finalPerms, token, expiresAt]);
+      insertRows = ins.rows;
+    } else {
+      const ins = await db.query(`
+        INSERT INTO boutique_members
+          (boutique_id, owner_user_id, email, role, status, permissions, invite_token, invite_expires_at)
+        VALUES ($1, $1, $2, $3, 'pending', $4, $5, $6)
+        RETURNING *
+      `, [req.user.id, email, role, finalPerms, token, expiresAt]);
+      insertRows = ins.rows;
+    }
+    const rows = insertRows;
 
     // TODO: envoyer un email d'invitation (optionnel)
     // await sendEmail(email, 'Invitation boutique', `Rejoignez la boutique sur Sama Commerce : ${token}`);
