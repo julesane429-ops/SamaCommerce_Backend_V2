@@ -30,7 +30,7 @@ router.get('/:id', verify, requirePlan('commandes'), async (req, res) => {
     const { rows } = await db.query(`
       SELECT c.*, f.name AS fournisseur_name, f.phone AS fournisseur_phone
       FROM restock_orders c LEFT JOIN fournisseurs f ON f.id=c.fournisseur_id
-      WHERE c.id=$3 AND ${sql}
+      WHERE c.id=$${p.length+1} AND ${sql}
     `, [...p, req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Commande introuvable' });
 
@@ -111,7 +111,7 @@ router.patch('/:id/recevoir', verify, requirePlan('commandes'), async (req, res)
     await client.query('BEGIN');
     const { sql, p } = bf(req, 'c');
     const { rows: cmd } = await client.query(
-      `SELECT * FROM restock_orders c WHERE c.id=$3 AND ${sql}`, [...p, req.params.id]
+      `SELECT * FROM restock_orders c WHERE c.id=$${p.length+1} AND ${sql}`, [...p, req.params.id]
     );
     if (!cmd.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Commande introuvable' }); }
 
@@ -134,7 +134,7 @@ router.patch('/:id/recevoir', verify, requirePlan('commandes'), async (req, res)
 router.delete('/:id', verify, requirePlan('commandes'), async (req, res) => {
   try {
     const { sql, p } = bf(req, 'c');
-    const { rows } = await db.query(`DELETE FROM restock_orders c WHERE c.id=$3 AND ${sql} RETURNING *`, [...p, req.params.id]);
+    const { rows } = await db.query(`DELETE FROM restock_orders c WHERE c.id=$${p.length+1} AND ${sql} RETURNING *`, [...p, req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Commande introuvable' });
     res.json({ message: 'Commande supprimée' });
   } catch (err) {
@@ -146,7 +146,7 @@ router.delete('/:id', verify, requirePlan('commandes'), async (req, res) => {
 router.post('/:id/items', verify, requirePlan('commandes'), async (req, res) => {
   try {
     const { sql, p } = bf(req, 'c');
-    const { rows: cmd } = await db.query(`SELECT id FROM restock_orders c WHERE c.id=$3 AND ${sql}`, [...p, req.params.id]);
+    const { rows: cmd } = await db.query(`SELECT id FROM restock_orders c WHERE c.id=$${p.length+1} AND ${sql}`, [...p, req.params.id]);
     if (!cmd.length) return res.status(404).json({ error: 'Commande introuvable' });
 
     const { product_id, quantity, prix_unitaire } = req.body;
@@ -165,7 +165,7 @@ router.post('/:id/items', verify, requirePlan('commandes'), async (req, res) => 
 router.delete('/:id/items/:itemId', verify, requirePlan('commandes'), async (req, res) => {
   try {
     const { sql, p } = bf(req, 'c');
-    const { rows: cmd } = await db.query(`SELECT id FROM restock_orders c WHERE c.id=$3 AND ${sql}`, [...p, req.params.id]);
+    const { rows: cmd } = await db.query(`SELECT id FROM restock_orders c WHERE c.id=$${p.length+1} AND ${sql}`, [...p, req.params.id]);
     if (!cmd.length) return res.status(404).json({ error: 'Commande introuvable' });
     await db.query('DELETE FROM commande_items WHERE id=$1 AND commande_id=$2', [req.params.itemId, req.params.id]);
     await db.query(
