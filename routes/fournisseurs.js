@@ -31,7 +31,7 @@ router.get('/:id', verifyToken, requirePlan('fournisseurs'), async (req, res) =>
   try {
     const { sql, p } = bf(req, 'f');
     const { rows: f } = await db.query(
-      `SELECT * FROM fournisseurs f WHERE f.id=$3 AND ${sql}`, [...p, req.params.id]
+      `SELECT * FROM fournisseurs f WHERE f.id=$${p.length+1} AND ${sql}`, [...p, req.params.id]
     );
     if (!f.length) return res.status(404).json({ error: 'Fournisseur introuvable' });
 
@@ -95,7 +95,7 @@ router.delete('/:id', verifyToken, requirePlan('fournisseurs'), perm('fournisseu
   try {
     const { sql, p } = bf(req, 'f');
     const { rowCount } = await db.query(
-      `DELETE FROM fournisseurs f WHERE f.id=$3 AND ${sql}`, [...p, req.params.id]
+      `DELETE FROM fournisseurs f WHERE f.id=$${p.length+1} AND ${sql}`, [...p, req.params.id]
     );
     if (!rowCount) return res.status(404).json({ error: 'Fournisseur introuvable' });
     res.json({ message: 'Fournisseur supprimé' });
@@ -128,7 +128,7 @@ router.delete('/:id/produits/:pid', verifyToken, requirePlan('fournisseurs'), pe
 router.get('/:id/reappro-message', verifyToken, async (req, res) => {
   try {
     const { sql, p } = bf(req, 'f');
-    const { rows: f } = await db.query(`SELECT * FROM fournisseurs f WHERE f.id=$3 AND ${sql}`, [...p, req.params.id]);
+    const { rows: f } = await db.query(`SELECT * FROM fournisseurs f WHERE f.id=$${p.length+1} AND ${sql}`, [...p, req.params.id]);
     if (!f.length) return res.status(404).json({ error: 'Fournisseur introuvable' });
 
     const { rows: prods } = await db.query(`
