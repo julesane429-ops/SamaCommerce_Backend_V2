@@ -7,10 +7,22 @@ const perm        = require('../middleware/checkPermission');
 // Helper : clause WHERE propriété d'une vente
 // Gère à la fois les données migrées (boutique_id set) et legacy (boutique_id NULL)
 function saleOwnerClause(req, alias = 's') {
-  const p = alias ? `${alias}.` : '';
+  const px  = alias ? `${alias}.` : '';
+  const uid = req.user.id;
+  const bid = req.user.boutique_id || null;
+
+  // Boutique principale (Pro, bid=null) → toutes les ventes de l'owner
+  if (!bid) {
+    return {
+      sql:    `${px}user_id = $1`,
+      params: [uid],
+    };
+  }
+
+  // Boutique secondaire → filtre strict avec fallback legacy
   return {
-    sql:    `(${p}boutique_id = $1 OR (${p}boutique_id IS NULL AND ${p}user_id = $2))`,
-    params: [req.user.boutique_id, req.user.id],
+    sql:    `(${px}boutique_id = $1 OR (${px}boutique_id IS NULL AND ${px}user_id = $2))`,
+    params: [bid, uid],
   };
 }
 
@@ -54,7 +66,7 @@ router.post('/', verifyToken, perm('vente'), async (req, res) => {
     // Chercher le produit dans la boutique active
     const { sql, params } = saleOwnerClause(req, 'p');
     const { rows: pRows } = await db.query(
-      `SELECT price, stock FROM products p WHERE id = $${p.length+1} AND ${sql} AND deleted_at IS NULL`,
+      `SELECT price, stock FROM products p WHERE id = $${params.length+1} AND ${sql} AND deleted_at IS NULL`,
       [...params, product_id]
     );
     const product = pRows[0];
@@ -97,7 +109,7 @@ router.patch('/:id', verifyToken, async (req, res) => {
   try {
     const { sql, params } = saleOwnerClause(req);
     const { rows } = await db.query(
-      `SELECT * FROM sales s WHERE s.id = $${p.length+1} AND ${sql}`,
+      `SELECT * FROM sales s WHERE s.id = $${params.length+1} AND ${sql}`,
       [...params, id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Vente introuvable ou non autorisée' });
@@ -153,7 +165,7 @@ router.delete('/:id', verifyToken, async (req, res) => {
   try {
     const { sql, params } = saleOwnerClause(req);
     const { rows } = await db.query(
-      `SELECT * FROM sales s WHERE s.id = $${p.length+1} AND ${sql}`,
+      `SELECT * FROM sales s WHERE s.id = $${params.length+1} AND ${sql}`,
       [...params, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Vente introuvable' });
@@ -184,7 +196,7 @@ router.patch('/:id/partial-payment', verifyToken, async (req, res) => {
   try {
     const { sql, params } = saleOwnerClause(req);
     const { rows } = await db.query(
-      `SELECT * FROM sales s WHERE s.id = $${p.length+1} AND ${sql}`,
+      `SELECT * FROM sales s WHERE s.id = $${params.length+1} AND ${sql}`,
       [...params, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Vente introuvable' });
