@@ -40,6 +40,8 @@ router.get('/', verifyToken, async (req, res) => {
 
     const { sql, params } = saleOwnerClause(req);
 
+    const limitPos  = params.length + 1;
+    const offsetPos = params.length + 2;
     const { rows } = await db.query(`
       SELECT s.*, p.name AS product_name
       FROM sales s
@@ -48,7 +50,7 @@ router.get('/', verifyToken, async (req, res) => {
         ${dateClause}
         ${cursorClause}
       ORDER BY s.created_at DESC
-      LIMIT $3 OFFSET $4
+      LIMIT $${limitPos} OFFSET $${offsetPos}
     `, [...params, limit, offset]);
 
     res.json(rows);
