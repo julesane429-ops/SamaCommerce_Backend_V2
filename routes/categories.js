@@ -3,6 +3,8 @@ const router      = express.Router();
 const db          = require('../db');
 const verifyToken = require('../middleware/auth');
 const perm        = require('../middleware/checkPermission');
+let logActivity;
+try { logActivity = require('./activityLogs').logActivity; } catch { logActivity = async () => {}; }
 
 function catOwner(req) {
   return {
@@ -38,9 +40,55 @@ router.post('/', verifyToken, perm('categories'), async (req, res) => {
        RETURNING id, name, user_id, boutique_id, emoji, couleur`,
       [name.trim(), req.user.id, req.user.boutique_id || null, emoji || '🏷️', couleur || null]
     );
+
+    await logActivity(req, {
+      action: 'ajout_categorie', entity_type: 'category',
+      entity_id: rows[0].id, details: { name: name.trim(), emoji },
+    });
+
     res.status(201).json(rows[0]);
   } catch (err) {
     console.error('POST /categories:', err.message);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// PATCH /categories/:id — Modifier une catégorie
+router.patch('/:id', verifyToken, perm('categories'), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'ID invalide' });
+
+    const { name, emoji, couleur } = req.body;
+    const { sql, params } = catOwner(req);
+
+    // Vérifier propriété
+    const { rows: existing } = await db.query(
+      `SELECT * FROM categories WHERE id = $${params.length + 1} AND ${sql}`,
+      [...params, id]
+    );
+    if (!existing.length) return res.status(404).json({ error: 'Catégorie non trouvée' });
+
+    const { rows } = await db.query(
+      `UPDATE categories SET
+         name    = COALESCE($1, name),
+         emoji   = COALESCE($2, emoji),
+         couleur = COALESCE($3, couleur),
+         updated_at = NOW()
+       WHERE id = $4
+       RETURNING id, name, user_id, emoji, couleur`,
+      [name?.trim() || null, emoji || null, couleur || null, id]
+    );
+
+    await logActivity(req, {
+      action: 'modification_categorie', entity_type: 'category',
+      entity_id: id,
+      details: { before: existing[0], after: rows[0] },
+    });
+
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('PATCH /categories/:id:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
@@ -54,12 +102,11 @@ router.delete('/:id', verifyToken, perm('categories'), async (req, res) => {
     const { sql, params } = catOwner(req);
 
     const { rows } = await db.query(
-      `SELECT id FROM categories WHERE id = $${params.length + 1} AND ${sql}`,
+      `SELECT id, name FROM categories WHERE id = $${params.length + 1} AND ${sql}`,
       [...params, id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Catégorie non trouvée ou non autorisée' });
 
-    // Vérifier produits liés dans cette boutique
     const { sql: ps, params: pp } = catOwner(req);
     const { rows: prods } = await db.query(
       `SELECT COUNT(*)::int AS cnt FROM products
@@ -71,6 +118,13 @@ router.delete('/:id', verifyToken, perm('categories'), async (req, res) => {
     }
 
     await db.query('DELETE FROM categories WHERE id = $1', [id]);
+
+    await logActivity(req, {
+      action: 'suppression_categorie', entity_type: 'category',
+      entity_id: id, details: { name: rows[0].name },
+      severity: 'warning',
+    });
+
     res.json({ success: true, message: 'Catégorie supprimée' });
   } catch (err) {
     console.error('DELETE /categories/:id:', err.message);
