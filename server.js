@@ -26,6 +26,8 @@ const caisseRoutes  = require('./routes/caisse');
 const customerOrdersRoutes = require('./routes/customerOrders');
 const employeeProxy        = require('./middleware/employeeProxy');
 
+const activityLogsRoutes = require('./routes/activityLogs');
+
 // ── CORS ──
 const allowedOrigins = [
   'https://samacommerce-frontend-v2-1.onrender.com',
@@ -93,10 +95,11 @@ app.use('/deliverymen',     deliverymenRoutes);
 app.use('/push',            require('./routes/push'));
 app.use('/boutiques',        require('./routes/boutiques'));
 
+app.use('/activity-logs', activityLogsRoutes);
+
 // Servir les fichiers statiques
 app.use(express.static(path.join(process.cwd())));
 
-app.use('/activity-logs', require('./routes/activityLogs'));
 
 // ══════════════════════════════════════
 // CRON ABONNEMENTS — toutes les nuits à minuit
