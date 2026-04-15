@@ -96,6 +96,7 @@ app.use('/boutiques',        require('./routes/boutiques'));
 // Servir les fichiers statiques
 app.use(express.static(path.join(process.cwd())));
 
+app.use('/activity-logs', require('./routes/activityLogs'));
 
 // ══════════════════════════════════════
 // CRON ABONNEMENTS — toutes les nuits à minuit
