@@ -3,25 +3,18 @@ const router      = express.Router();
 const db          = require('../db');
 const verifyToken = require('../middleware/auth');
 const perm        = require('../middleware/checkPermission');
+let logActivity;
+try { logActivity = require('./activityLogs').logActivity; } catch { logActivity = async () => {}; }
 
-// Helper : clause WHERE propriété d'une vente
-// Gère à la fois les données migrées (boutique_id set) et legacy (boutique_id NULL)
 function saleOwnerClause(req, alias = 's') {
   const px  = alias ? `${alias}.` : '';
   const uid = req.user.id;
   const bid = req.user.boutique_id || null;
-
-  // Boutique principale (Pro, bid=null) → toutes les ventes de l'owner
   if (!bid) {
-    return {
-      sql:    `${px}user_id = $1`,
-      params: [uid],
-    };
+    return { sql: `${px}user_id = $1`, params: [uid] };
   }
-
-  // Boutique secondaire → filtre strict avec fallback legacy
   return {
-    sql:    `(${px}boutique_id = $1 OR (${px}boutique_id IS NULL AND ${px}user_id = $2))`,
+    sql: `(${px}boutique_id = $1 OR (${px}boutique_id IS NULL AND ${px}user_id = $2))`,
     params: [bid, uid],
   };
 }
@@ -43,7 +36,7 @@ router.get('/', verifyToken, async (req, res) => {
     const limitPos  = params.length + 1;
     const offsetPos = params.length + 2;
     const { rows } = await db.query(`
-      SELECT s.*, p.name AS product_name
+      SELECT s.*, p.name AS product_name, s.payment_details
       FROM sales s
       JOIN products p ON s.product_id = p.id
       WHERE ${sql}
@@ -60,12 +53,15 @@ router.get('/', verifyToken, async (req, res) => {
   }
 });
 
-// ── POST /sales ──
+// ── POST /sales ── (avec support paiement mixte)
 router.post('/', verifyToken, perm('vente'), async (req, res) => {
-  const { product_id, quantity, payment_method, client_name, client_phone, due_date, client_id } = req.body;
+  const {
+    product_id, quantity, payment_method,
+    payment_details,  // NOUVEAU : { especes: 3000, wave: 2000 }
+    client_name, client_phone, due_date, client_id
+  } = req.body;
 
   try {
-    // Chercher le produit dans la boutique active
     const { sql, params } = saleOwnerClause(req, 'p');
     const { rows: pRows } = await db.query(
       `SELECT price, stock FROM products p WHERE id = $${params.length+1} AND ${sql} AND deleted_at IS NULL`,
@@ -78,13 +74,18 @@ router.post('/', verifyToken, perm('vente'), async (req, res) => {
     const total = product.price * quantity;
     const paid  = payment_method !== 'credit';
 
+    // Déterminer la méthode à stocker
+    // Si payment_details est fourni, c'est un paiement mixte
+    const finalMethod  = payment_details ? 'mixte' : payment_method;
+    const finalDetails = payment_details ? JSON.stringify(payment_details) : null;
+
     const { rows } = await db.query(
       `INSERT INTO sales
-         (product_id, quantity, total, payment_method, user_id, boutique_id,
+         (product_id, quantity, total, payment_method, payment_details, user_id, boutique_id,
           client_name, client_phone, client_id, due_date, paid)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
        RETURNING *`,
-      [product_id, quantity, total, payment_method,
+      [product_id, quantity, total, finalMethod, finalDetails,
        req.user.id, req.user.boutique_id || null,
        client_name || null, client_phone || null, client_id || null,
        due_date || null, paid]
@@ -95,6 +96,21 @@ router.post('/', verifyToken, perm('vente'), async (req, res) => {
       'UPDATE products SET stock = stock - $1 WHERE id = $2 AND user_id = $3',
       [quantity, product_id, req.user.id]
     );
+
+    // Log d'activité
+    await logActivity(req, {
+      action: 'vente',
+      entity_type: 'sale',
+      entity_id: rows[0].id,
+      details: {
+        product_id,
+        quantity,
+        total,
+        payment_method: finalMethod,
+        payment_details: payment_details || null,
+      },
+      severity: total >= 50000 ? 'warning' : 'info',
+    });
 
     res.status(201).json(rows[0]);
   } catch (err) {
@@ -150,6 +166,15 @@ router.patch('/:id', verifyToken, async (req, res) => {
       );
     }
 
+    // Log modification
+    await logActivity(req, {
+      action: 'modification_vente',
+      entity_type: 'sale',
+      entity_id: id,
+      details: { quantity, payment_method, paid },
+      severity: 'warning',
+    });
+
     const { rows: updated } = await db.query(
       `SELECT s.*, p.name AS product_name FROM sales s
        JOIN products p ON s.product_id = p.id WHERE s.id = $1`,
@@ -181,6 +206,19 @@ router.delete('/:id', verifyToken, async (req, res) => {
         [vente.quantity, vente.product_id, req.user.id]
       );
     }
+
+    // Log suppression (critique)
+    await logActivity(req, {
+      action: 'suppression_vente',
+      entity_type: 'sale',
+      entity_id: parseInt(req.params.id),
+      details: {
+        product_name: vente.product_name,
+        total: vente.total,
+        payment_method: vente.payment_method,
+      },
+      severity: 'critical',
+    });
 
     res.json({ message: 'Vente annulée', restored_qty: vente.quantity });
   } catch (err) {
@@ -221,6 +259,15 @@ router.patch('/:id/partial-payment', verifyToken, async (req, res) => {
        WHERE id=$4 RETURNING *`,
       [newPaid, isFullyPaid, payment_method || null, req.params.id]
     );
+
+    // Log remboursement
+    await logActivity(req, {
+      action: isFullyPaid ? 'credit_rembourse' : 'paiement_partiel',
+      entity_type: 'sale',
+      entity_id: parseInt(req.params.id),
+      details: { amount, total, remaining: Math.max(0, remaining) },
+      severity: 'info',
+    });
 
     res.json({
       sale: updated[0], amount_paid: newPaid,
