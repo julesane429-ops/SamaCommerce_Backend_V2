@@ -1,11 +1,12 @@
-// routes/push.js — Web Push Notifications (amélioré)
-// Ajout : alertes proactives stock faible + crédits en retard
+// routes/push.js — Web Push Notifications (robuste)
 const express     = require('express');
 const router      = express.Router();
 const db          = require('../db');
 const verifyToken = require('../middleware/auth');
 
 let webpush = null;
+let _vapidConfigured = false;
+
 try {
   webpush = require('web-push');
   if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
@@ -14,22 +15,30 @@ try {
       process.env.VAPID_PUBLIC_KEY,
       process.env.VAPID_PRIVATE_KEY
     );
+    _vapidConfigured = true;
+  } else {
+    console.warn('⚠️ VAPID keys non configurées — push désactivé');
   }
 } catch {
   console.warn('⚠️ web-push non installé — push notifications désactivées');
 }
 
-// ── GET /push/vapid-key ──
 router.get('/vapid-key', (req, res) => {
   res.json({ publicKey: process.env.VAPID_PUBLIC_KEY || null });
 });
 
 // ── POST /push/subscribe ──
+// FIX : ne renvoie plus 500 si push désactivé
 router.post('/subscribe', verifyToken, async (req, res) => {
+  if (!_vapidConfigured) {
+    return res.json({ message: 'Push désactivé — VAPID non configuré', skipped: true });
+  }
+
   const { subscription } = req.body;
   if (!subscription?.endpoint) {
     return res.status(400).json({ error: 'Subscription invalide' });
   }
+
   try {
     await db.query(
       `INSERT INTO push_subscriptions (user_id, endpoint, subscription_json)
@@ -40,11 +49,10 @@ router.post('/subscribe', verifyToken, async (req, res) => {
     res.json({ message: 'Abonnement push enregistré' });
   } catch (err) {
     console.error('POST /push/subscribe:', err.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.json({ message: 'Push non disponible', skipped: true });
   }
 });
 
-// ── DELETE /push/unsubscribe ──
 router.delete('/unsubscribe', verifyToken, async (req, res) => {
   const { endpoint } = req.body;
   try {
@@ -54,16 +62,12 @@ router.delete('/unsubscribe', verifyToken, async (req, res) => {
     );
     res.json({ message: 'Abonnement supprimé' });
   } catch (err) {
-    console.error('DELETE /push/unsubscribe:', err.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.json({ message: 'Push non disponible', skipped: true });
   }
 });
 
-// ══════════════════════════════════════
-// ENVOI PUSH À UN UTILISATEUR
-// ══════════════════════════════════════
 async function sendPushToUser(userId, payload) {
-  if (!webpush) return;
+  if (!webpush || !_vapidConfigured) return;
   try {
     const { rows } = await db.query(
       'SELECT id, subscription_json FROM push_subscriptions WHERE user_id = $1',
@@ -85,18 +89,11 @@ async function sendPushToUser(userId, payload) {
   }
 }
 
-// ══════════════════════════════════════
-// ALERTES PROACTIVES (appelé périodiquement)
-// ══════════════════════════════════════
-
-// ── POST /push/check-alerts ── Vérifier et envoyer les alertes
-// Appeler via un cron ou à chaque login
 router.post('/check-alerts', verifyToken, async (req, res) => {
   const userId = req.user.id;
   const alerts = [];
 
   try {
-    // 1. Produits stock faible (≤ 3)
     const { rows: lowStock } = await db.query(
       `SELECT name, stock FROM products
        WHERE user_id = $1 AND deleted_at IS NULL AND stock > 0 AND stock <= 3
@@ -108,13 +105,12 @@ router.post('/check-alerts', verifyToken, async (req, res) => {
       const names = lowStock.map(p => p.name).join(', ');
       alerts.push({
         title: '⚠️ Stock faible',
-        body: lowStock.length + ' produit' + (lowStock.length > 1 ? 's' : '') + ' bientôt épuisé' + (lowStock.length > 1 ? 's' : '') + ' : ' + names,
+        body: lowStock.length + ' produit' + (lowStock.length > 1 ? 's' : '') + ' bientôt épuisé : ' + names,
         type: 'stock',
         url: '/#stock',
       });
     }
 
-    // 2. Crédits en retard (due_date dépassée)
     const { rows: lateCredits } = await db.query(
       `SELECT client_name, total, due_date FROM sales
        WHERE user_id = $1 AND paid = false AND payment_method = 'credit'
@@ -133,41 +129,24 @@ router.post('/check-alerts', verifyToken, async (req, res) => {
       });
     }
 
-    // 3. Produits en rupture totale
-    const { rows: outOfStock } = await db.query(
-      `SELECT COUNT(*)::int AS cnt FROM products
-       WHERE user_id = $1 AND deleted_at IS NULL AND stock = 0`,
-      [userId]
-    );
-
-    if (outOfStock[0].cnt > 0) {
-      alerts.push({
-        title: '🔴 Rupture de stock',
-        body: outOfStock[0].cnt + ' produit' + (outOfStock[0].cnt > 1 ? 's' : '') + ' à 0 — pensez à réapprovisionner',
-        type: 'stock',
-        url: '/#stock',
-      });
-    }
-
-    // Envoyer les push
     for (const alert of alerts) {
       await sendPushToUser(userId, alert);
     }
 
-    // Aussi sauvegarder dans notifications (persistant)
-    for (const alert of alerts) {
-      await db.query(
-        `INSERT INTO notifications (user_id, type, title, message, action_url, boutique_id)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT DO NOTHING`,
-        [userId, alert.type, alert.title, alert.body, alert.url, req.user.boutique_id || null]
-      );
-    }
+    try {
+      for (const alert of alerts) {
+        await db.query(
+          `INSERT INTO notifications (user_id, type, title, message, action_url, boutique_id)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [userId, alert.type, alert.title, alert.body, alert.url, req.user.boutique_id || null]
+        );
+      }
+    } catch (_) { }
 
     res.json({ alerts_sent: alerts.length, alerts });
   } catch (err) {
     console.error('POST /push/check-alerts:', err.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.json({ alerts_sent: 0, alerts: [], error: err.message });
   }
 });
 
