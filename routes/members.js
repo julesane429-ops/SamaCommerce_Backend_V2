@@ -22,9 +22,11 @@ router.get('/', verifyToken, async (req, res) => {
 
     if (boutiqueId) {
       // 1. Vérifier que l'utilisateur est OWNER de cette boutique
+      // Check ownership — try both req.user.id and req.user.realId (in case employeeProxy replaced it)
+      const _ownerId = req.user.realId || req.user.id;
       const { rows: owned } = await db.query(
         'SELECT id FROM boutiques WHERE id = $1 AND owner_id = $2',
-        [boutiqueId, req.user.id]
+        [boutiqueId, _ownerId]
       );
 
       // 2. Sinon vérifier que c'est un EMPLOYÉ accepté de cette boutique
@@ -32,7 +34,7 @@ router.get('/', verifyToken, async (req, res) => {
         const { rows: memberOf } = await db.query(
           `SELECT id FROM boutique_members
            WHERE ref_boutique_id = $1 AND member_id = $2 AND status = 'accepted'`,
-          [boutiqueId, req.user.id]
+          [boutiqueId, req.user.realId || req.user.id]
         );
         if (!memberOf.length) {
           return res.status(403).json({ error: 'Accès refusé' });
@@ -93,8 +95,13 @@ router.post('/invite', verifyToken, async (req, res) => {
     }
 
     // ✅ boutique_id dans le body = boutiques.id (multi-boutique)
-    // Quota et duplicate checks PER BOUTIQUE (pas global owner)
-    const bodyBoutiqueId = req.body.boutique_id ? parseInt(req.body.boutique_id) : null;
+    // Si absent, utiliser req.user.boutique_id (injecté par boutiqueContext = boutiques.id valide)
+    // ou chercher la boutique primaire du user comme fallback final
+    const bodyBoutiqueId = req.body.boutique_id
+      ? parseInt(req.body.boutique_id)
+      : (req.user.boutique_id || null);
+
+    // Pour le quota on utilise ref_boutique_id si dispo, sinon boutique_id legacy
     const quotaBoutiqueId = bodyBoutiqueId || req.user.id;
 
     const { rows: existing } = await db.query(
@@ -140,13 +147,29 @@ router.post('/invite', verifyToken, async (req, res) => {
       `, [req.user.id, bodyBoutiqueId, req.user.id, email, role, finalPerms, token, expiresAt]);
       insertRows = ins.rows;
     } else {
-      const ins = await db.query(`
-        INSERT INTO boutique_members
-          (boutique_id, owner_user_id, email, role, status, permissions, invite_token, invite_expires_at)
-        VALUES ($1, $1, $2, $3, 'pending', $4, $5, $6)
-        RETURNING *
-      `, [req.user.id, email, role, finalPerms, token, expiresAt]);
-      insertRows = ins.rows;
+      // Pas de boutique_id dans le body → utiliser la boutique primaire via boutiqueContext
+      // ref_boutique_id est obligatoire (FK vers boutiques.id)
+      const primaryBoutiqueId = req.user.boutique_id || null;
+
+      if (primaryBoutiqueId) {
+        // Insérer avec ref_boutique_id = boutique primaire
+        const ins = await db.query(`
+          INSERT INTO boutique_members
+            (boutique_id, ref_boutique_id, owner_user_id, email, role, status, permissions, invite_token, invite_expires_at)
+          VALUES ($1, $2, $1, $3, $4, 'pending', $5, $6, $7)
+          RETURNING *
+        `, [req.user.id, primaryBoutiqueId, email, role, finalPerms, token, expiresAt]);
+        insertRows = ins.rows;
+      } else {
+        // Fallback legacy (pas de multi-boutique configuré)
+        const ins = await db.query(`
+          INSERT INTO boutique_members
+            (boutique_id, owner_user_id, email, role, status, permissions, invite_token, invite_expires_at)
+          VALUES ($1, $1, $2, $3, 'pending', $4, $5, $6)
+          RETURNING *
+        `, [req.user.id, email, role, finalPerms, token, expiresAt]);
+        insertRows = ins.rows;
+      }
     }
     const rows = insertRows;
 
