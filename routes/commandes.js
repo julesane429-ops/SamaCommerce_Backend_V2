@@ -78,30 +78,39 @@ router.post('/', verify, requirePlan('commandes'), async (req, res) => {
     await client.query('ROLLBACK');
     console.error('POST /commandes:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
-  } finally { client.release(); }
+  } finally {
+    client.release();
+  }
 });
 
+// ── PATCH /commandes/:id ── FIX : placeholders $${i} au lieu de ${i}
 router.patch('/:id', verify, requirePlan('commandes'), async (req, res) => {
   try {
     const allowed = ['status','notes','expected_date','fournisseur_id'];
     const set = [], values = [];
     let i = 1;
     for (const f of allowed) {
-      if (Object.prototype.hasOwnProperty.call(req.body, f)) { set.push(`${f}=$${i++}`); values.push(req.body[f]); }
+      if (Object.prototype.hasOwnProperty.call(req.body, f)) {
+        set.push(`${f}=$${i++}`);
+        values.push(req.body[f]);
+      }
     }
     if (!set.length) return res.status(400).json({ error: 'Aucun champ' });
+
     const { uid } = bf(req);
     values.push(req.params.id, uid);
+
+    // FIX : les placeholders manquaient le préfixe $
     const { rows } = await db.query(
       `UPDATE restock_orders SET ${set.join(',')}
-       WHERE id=${i} AND user_id=${i+1} RETURNING *`,
+       WHERE id=$${i} AND user_id=$${i+1} RETURNING *`,
       values
     );
     if (!rows.length) return res.status(404).json({ error: 'Commande introuvable' });
     res.json(rows[0]);
   } catch (err) {
     console.error('PATCH /commandes/:id:', err.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', details: err.message });
   }
 });
 
@@ -141,39 +150,6 @@ router.delete('/:id', verify, requirePlan('commandes'), async (req, res) => {
     console.error('DELETE /commandes/:id:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
-});
-
-router.post('/:id/items', verify, requirePlan('commandes'), async (req, res) => {
-  try {
-    const { sql, p } = bf(req, 'c');
-    const { rows: cmd } = await db.query(`SELECT id FROM restock_orders c WHERE c.id=$${p.length+1} AND ${sql}`, [...p, req.params.id]);
-    if (!cmd.length) return res.status(404).json({ error: 'Commande introuvable' });
-
-    const { product_id, quantity, prix_unitaire } = req.body;
-    const { rows } = await db.query(
-      'INSERT INTO commande_items (commande_id, product_id, quantity, prix_unitaire) VALUES ($1,$2,$3,$4) RETURNING *',
-      [req.params.id, product_id, quantity, prix_unitaire]
-    );
-    await db.query(
-      'UPDATE restock_orders SET total=(SELECT COALESCE(SUM(quantity*prix_unitaire),0) FROM commande_items WHERE commande_id=$1) WHERE id=$1',
-      [req.params.id]
-    );
-    res.status(201).json(rows[0]);
-  } catch (err) { res.status(500).json({ error: 'Erreur serveur' }); }
-});
-
-router.delete('/:id/items/:itemId', verify, requirePlan('commandes'), async (req, res) => {
-  try {
-    const { sql, p } = bf(req, 'c');
-    const { rows: cmd } = await db.query(`SELECT id FROM restock_orders c WHERE c.id=$${p.length+1} AND ${sql}`, [...p, req.params.id]);
-    if (!cmd.length) return res.status(404).json({ error: 'Commande introuvable' });
-    await db.query('DELETE FROM commande_items WHERE id=$1 AND commande_id=$2', [req.params.itemId, req.params.id]);
-    await db.query(
-      'UPDATE restock_orders SET total=(SELECT COALESCE(SUM(quantity*prix_unitaire),0) FROM commande_items WHERE commande_id=$1) WHERE id=$1',
-      [req.params.id]
-    );
-    res.json({ message: 'Ligne supprimée' });
-  } catch (err) { res.status(500).json({ error: 'Erreur serveur' }); }
 });
 
 module.exports = router;
