@@ -5,6 +5,22 @@ const verify  = require('../middleware/auth');
 const perm    = require('../middleware/checkPermission');
 const bf      = require('../middleware/boutiqueFilter');
 
+// ── GET /clients/for-sale ── Liste légère pour autocomplete vente
+// Permission 'vente' uniquement — un employé vendeur peut choisir un client
+router.get('/for-sale', verify, perm('vente'), async (req, res) => {
+  try {
+    const { sql, p } = bf(req, 'c');
+    const { rows } = await db.query(
+      `SELECT c.id, c.name, c.phone FROM clients c WHERE ${sql} ORDER BY c.name ASC`,
+      p
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('GET /clients/for-sale:', err.message);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
 // GET /clients
 router.get('/', verify, perm('clients'), async (req, res) => {
   try {
